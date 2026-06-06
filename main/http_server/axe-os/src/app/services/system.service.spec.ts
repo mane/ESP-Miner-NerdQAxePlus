@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
-import { provideHttpClientTesting, HttpTestingController } from '@angular/common/http/testing';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 
 import { SystemService } from './system.service';
 
@@ -35,5 +35,14 @@ describe('SystemService', () => {
     expect(req.request.headers.get('X-TOTP')).toBe('123456');
     expect(req.request.headers.has('X-OTP-Code')).toBeFalse();
     req.flush('ok');
+  });
+
+  it('sends X-TOTP when resetting stats with a one-shot code', () => {
+    service.resetStats('', '123456').subscribe();
+
+    const req = httpMock.expectOne('/api/system/reset-stats');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.headers.get('X-TOTP')).toBe('123456');
+    req.flush('', { status: 204, statusText: 'No Content' });
   });
 });
