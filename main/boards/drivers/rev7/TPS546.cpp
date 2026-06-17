@@ -593,39 +593,18 @@ void TPS546_clear_faults(void)
 
 static bool TPS546_write_vout_limit_ratios(float vout_command)
 {
-    ESP_LOGI(TAG, "VOUT_OV_FAULT_LIMIT: %.2fx (%.2fV)",
-             TPS546_INIT_VOUT_OV_FAULT_LIMIT, vout_command * TPS546_INIT_VOUT_OV_FAULT_LIMIT);
-    if (smb_write_word(PMBUS_VOUT_OV_FAULT_LIMIT, float_2_ulinear16(TPS546_INIT_VOUT_OV_FAULT_LIMIT)) != ESP_OK) {
-        return false;
-    }
+    auto write_limit = [vout_command](uint8_t command, const char *name, float ratio) -> bool {
+        const float limit = vout_command * ratio;
+        ESP_LOGI(TAG, "%s: %.2fx (%.2fV)", name, ratio, limit);
+        return smb_write_word(command, float_2_ulinear16(limit)) == ESP_OK;
+    };
 
-    ESP_LOGI(TAG, "VOUT_OV_WARN_LIMIT: %.2fx (%.2fV)",
-             TPS546_INIT_VOUT_OV_WARN_LIMIT, vout_command * TPS546_INIT_VOUT_OV_WARN_LIMIT);
-    if (smb_write_word(PMBUS_VOUT_OV_WARN_LIMIT, float_2_ulinear16(TPS546_INIT_VOUT_OV_WARN_LIMIT)) != ESP_OK) {
-        return false;
-    }
-
-    ESP_LOGI(TAG, "VOUT_MARGIN_HIGH: %.2fx (%.2fV)",
-             TPS546_INIT_VOUT_MARGIN_HIGH, vout_command * TPS546_INIT_VOUT_MARGIN_HIGH);
-    if (smb_write_word(PMBUS_VOUT_MARGIN_HIGH, float_2_ulinear16(TPS546_INIT_VOUT_MARGIN_HIGH)) != ESP_OK) {
-        return false;
-    }
-
-    ESP_LOGI(TAG, "VOUT_MARGIN_LOW: %.2fx (%.2fV)",
-             TPS546_INIT_VOUT_MARGIN_LOW, vout_command * TPS546_INIT_VOUT_MARGIN_LOW);
-    if (smb_write_word(PMBUS_VOUT_MARGIN_LOW, float_2_ulinear16(TPS546_INIT_VOUT_MARGIN_LOW)) != ESP_OK) {
-        return false;
-    }
-
-    ESP_LOGI(TAG, "VOUT_UV_WARN_LIMIT: %.2fx (%.2fV)",
-             TPS546_INIT_VOUT_UV_WARN_LIMIT, vout_command * TPS546_INIT_VOUT_UV_WARN_LIMIT);
-    if (smb_write_word(PMBUS_VOUT_UV_WARN_LIMIT, float_2_ulinear16(TPS546_INIT_VOUT_UV_WARN_LIMIT)) != ESP_OK) {
-        return false;
-    }
-
-    ESP_LOGI(TAG, "VOUT_UV_FAULT_LIMIT: %.2fx (%.2fV)",
-             TPS546_INIT_VOUT_UV_FAULT_LIMIT, vout_command * TPS546_INIT_VOUT_UV_FAULT_LIMIT);
-    return smb_write_word(PMBUS_VOUT_UV_FAULT_LIMIT, float_2_ulinear16(TPS546_INIT_VOUT_UV_FAULT_LIMIT)) == ESP_OK;
+    return write_limit(PMBUS_VOUT_OV_FAULT_LIMIT, "VOUT_OV_FAULT_LIMIT", TPS546_INIT_VOUT_OV_FAULT_LIMIT) &&
+           write_limit(PMBUS_VOUT_OV_WARN_LIMIT, "VOUT_OV_WARN_LIMIT", TPS546_INIT_VOUT_OV_WARN_LIMIT) &&
+           write_limit(PMBUS_VOUT_MARGIN_HIGH, "VOUT_MARGIN_HIGH", TPS546_INIT_VOUT_MARGIN_HIGH) &&
+           write_limit(PMBUS_VOUT_MARGIN_LOW, "VOUT_MARGIN_LOW", TPS546_INIT_VOUT_MARGIN_LOW) &&
+           write_limit(PMBUS_VOUT_UV_WARN_LIMIT, "VOUT_UV_WARN_LIMIT", TPS546_INIT_VOUT_UV_WARN_LIMIT) &&
+           write_limit(PMBUS_VOUT_UV_FAULT_LIMIT, "VOUT_UV_FAULT_LIMIT", TPS546_INIT_VOUT_UV_FAULT_LIMIT);
 }
 
 /**
