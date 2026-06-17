@@ -2,6 +2,12 @@
 
 # ESP-Miner-Nerdaxe version
 
+> Community fork status: this repository is now maintained independently at
+> https://github.com/mane/ESP-Miner-NerdQAxePlus. It starts from
+> `shufps/ESP-Miner-NerdQAxePlus` and keeps the original credits, while allowing
+> fixes and releases to proceed in this fork when upstream collaboration is not
+> available.
+
 | Supported Targets | ESP32-S3              |
 | ----------------- | --------------------- |
 | Required Platform | >= ESP-IDF v5.3.X       |
@@ -18,7 +24,7 @@ Credits to the devs:
 
 The newest releases are always here:
 
-https://github.com/shufps/ESP-Miner-NerdQAxePlus/releases
+https://github.com/mane/ESP-Miner-NerdQAxePlus/releases
 
 ### Recommended Method: The Webflasher
 
@@ -36,7 +42,7 @@ First you need to clone the repository and create a local copy of the config fil
 
 ```bash
 # clone repository
-git clone https://github.com/shufps/ESP-Miner-NerdQAxePlus
+git clone https://github.com/mane/ESP-Miner-NerdQAxePlus
 
 # change into the cloned repository
 cd ESP-Miner-NerdQAxePlus
