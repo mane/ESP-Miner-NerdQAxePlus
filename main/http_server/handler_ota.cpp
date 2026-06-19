@@ -27,6 +27,10 @@ esp_err_t POST_WWW_update(httpd_req_t *req)
     }
 
     int remaining = req->content_len;
+    if (remaining <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty WWW update");
+        return ESP_FAIL;
+    }
 
     const esp_partition_t *www_partition =
         esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "www");
@@ -119,6 +123,10 @@ esp_err_t POST_OTA_update(httpd_req_t *req)
 
     esp_ota_handle_t ota_handle;
     int remaining = req->content_len;
+    if (remaining <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty firmware update");
+        return ESP_FAIL;
+    }
 
     // lock the power management module
     LockGuard lg(POWER_MANAGEMENT_MODULE);

@@ -30,11 +30,15 @@ class OtaErrorHandlingContractTest(unittest.TestCase):
         self.assertIsNone(re.search(r"\bESP_ERROR_CHECK\s*\(", source))
 
         www_body = _function_body(source, "esp_err_t POST_WWW_update")
+        self.assertRegex(www_body, r"if \(remaining <= 0\) \{\n\s*httpd_resp_send_err\(req, HTTPD_400_BAD_REQUEST, \"Empty WWW update\"\)")
+        self.assertLess(www_body.index("remaining <= 0"), www_body.index("esp_partition_erase_range"))
         self.assertIn("esp_partition_erase_range", www_body)
         self.assertRegex(www_body, r"esp_err_t\s+erase_err\s*=\s*esp_partition_erase_range")
         self.assertIn("if (!buf)", www_body)
 
         fw_body = _function_body(source, "esp_err_t POST_OTA_update")
+        self.assertRegex(fw_body, r"if \(remaining <= 0\) \{\n\s*httpd_resp_send_err\(req, HTTPD_400_BAD_REQUEST, \"Empty firmware update\"\)")
+        self.assertLess(fw_body.index("remaining <= 0"), fw_body.index("POWER_MANAGEMENT_MODULE.shutdown"))
         self.assertIn("if (ota_partition == NULL)", fw_body)
         self.assertRegex(fw_body, r"esp_err_t\s+ota_err\s*=\s*esp_ota_begin")
         self.assertIn("if (!buf)", fw_body)
