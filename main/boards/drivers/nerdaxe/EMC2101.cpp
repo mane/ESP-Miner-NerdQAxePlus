@@ -30,13 +30,14 @@ bool EMC2101_set_fan_polarity(bool invert) {
 // takes a fan speed percent
 void EMC2101_set_fan_speed(float percent)
 {
-    uint8_t speed;
+    if (percent < 0.0f) percent = 0.0f;
+    if (percent > 1.0f) percent = percent / 100.0f;
+    if (percent > 1.0f) percent = 1.0f;
 
-    if (percent < 0) percent = 0;
-    if (percent > 100) percent = 100;
+    int speed = (int) (63.0f * percent + 0.5f);
+    if (speed > 63) speed = 63;
 
-    speed = (uint8_t) (63.0 * percent);
-    esp_err_t err = i2c_master_register_write_byte(EMC2101_I2CADDR_DEFAULT, EMC2101_REG_FAN_SETTING, speed);
+    esp_err_t err = i2c_master_register_write_byte(EMC2101_I2CADDR_DEFAULT, EMC2101_REG_FAN_SETTING, (uint8_t) speed);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "error setting fan speed");
     }

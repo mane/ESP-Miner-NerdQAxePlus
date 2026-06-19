@@ -366,7 +366,8 @@ esp_err_t PATCH_update_settings(httpd_req_t *req)
     }
 #ifdef VR_FREQUENCY_ENABLED
     if (doc["vrFrequency"].is<uint32_t>()) {
-        Config::setVrFrequency(doc["vrFrequency"].as<uint32_t>());
+        uint32_t vrFrequency = doc["vrFrequency"].as<uint32_t>();
+        if (vrFrequency > 0) Config::setVrFrequency(vrFrequency);
     }
 #endif
 

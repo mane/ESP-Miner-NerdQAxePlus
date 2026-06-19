@@ -4,7 +4,7 @@
 #include <esp_check.h>
 
 Tmp451MuxExp::Tmp451MuxExp(Fxl6408 *flx, int a0, int a1, uint8_t i2c_addr, bool mux_active_high)
-    : Tmp451(i2c_addr), m_flx(flx), m_a0(a0), m_a1(a1)
+    : Tmp451(i2c_addr), m_flx(flx), m_a0(a0), m_a1(a1), m_mux_active_high(mux_active_high)
 {}
 
 esp_err_t Tmp451MuxExp::init()

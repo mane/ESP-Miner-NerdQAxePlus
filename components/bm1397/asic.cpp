@@ -173,17 +173,32 @@ void Asic::setVrFreqReg(uint32_t value) {
 
 // Convert desired VR frequency (Hz, integer) to register value for 0x10
 uint32_t Asic::vrFreqToReg(uint32_t freq_hz) {
+    if (freq_hz == 0) {
+        ESP_LOGW(TAG, "invalid version rolling frequency: 0Hz");
+        return 0;
+    }
+
     // reg = round(VR_REG_PER_HZ / freq_hz) using integer division with rounding
     return static_cast<uint32_t>((VR_REG_PER_HZ_U64 + (freq_hz / 2)) / freq_hz);
 }
 
 // Convert 0x10 register value back to VR frequency (Hz, integer)
 uint32_t Asic::vrRegToFreq(uint32_t reg) {
+    if (reg == 0) {
+        ESP_LOGW(TAG, "invalid version rolling register: 0");
+        return 0;
+    }
+
     // freq = round(VR_REG_PER_HZ / reg) using integer division with rounding
     return static_cast<uint32_t>((VR_REG_PER_HZ_U64 + (reg / 2)) / reg);
 }
 
 void Asic::setVrFrequency(uint32_t freq_hz) {
+    if (freq_hz == 0) {
+        ESP_LOGW(TAG, "ignoring invalid version rolling frequency: 0Hz");
+        return;
+    }
+
     setVrFreqReg(vrFreqToReg(freq_hz));
 }
 
