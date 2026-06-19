@@ -187,6 +187,15 @@ void Asic::setVrFrequency(uint32_t freq_hz) {
     setVrFreqReg(vrFreqToReg(freq_hz));
 }
 
+void Asic::setVersionMask(uint32_t version_mask) {
+    uint16_t chip_mask = static_cast<uint16_t>((version_mask >> 13) & 0xFFFFu);
+    ESP_LOGI(TAG, "setting version rolling mask %08lx (chip mask %04x)",
+             (unsigned long) version_mask, (unsigned int) chip_mask);
+    send6(CMD_WRITE_ALL, 0x00, 0xA4, 0x90, 0x00,
+          static_cast<uint8_t>((chip_mask >> 8) & 0xFF),
+          static_cast<uint8_t>(chip_mask & 0xFF));
+}
+
 // default calculation using address_interval
 uint8_t Asic::chipIndexFromAddr(uint8_t addr) {
     return (m_addressInterval > 0) ? (addr / m_addressInterval) : 0;

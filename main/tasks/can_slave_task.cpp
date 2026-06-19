@@ -169,6 +169,19 @@ static void handle_settings_cmd(const uint8_t *p, size_t len)
         case CAN_CMD_GET_CONFIG:
             send_config = true;
             break;
+        case CAN_CMD_SET_VERSION_MASK:
+            if (len >= 1 + sizeof(uint32_t)) {
+                uint32_t version_mask;
+                memcpy(&version_mask, p + 1, sizeof(version_mask));
+                Asic *asics = SYSTEM_MODULE.getBoard()->getAsics();
+                if (asics) {
+                    asics->setVersionMask(version_mask);
+                    ESP_LOGI(TAG, "CMD SET_VERSION_MASK %08lX → applied", (unsigned long) version_mask);
+                } else {
+                    ESP_LOGW(TAG, "CMD SET_VERSION_MASK %08lX ignored: ASIC not ready", (unsigned long) version_mask);
+                }
+            }
+            break;
         case CAN_CMD_SHUTDOWN:
             ESP_LOGW(TAG, "CMD SHUTDOWN → shutting down");
             POWER_MANAGEMENT_MODULE.shutdown();

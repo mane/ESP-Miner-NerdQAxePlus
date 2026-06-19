@@ -44,23 +44,23 @@ uint8_t BM1373::init(uint64_t frequency, uint16_t asic_count, uint32_t difficult
 {
     // reset is done externally to not have board dependencies
 
-    // enable and set version rolling mask to 0xFFFF
-    send6(CMD_WRITE_ALL, 0x00, 0xA4, 0x90, 0x00, 0xFF, 0xFF);
+    // enable and set default version rolling mask
+    setVersionMask(ASIC_DEFAULT_VERSION_MASK);
 
-    // enable and set version rolling mask to 0xFFFF (again)
-    send6(CMD_WRITE_ALL, 0x00, 0xA4, 0x90, 0x00, 0xFF, 0xFF);
+    // enable and set default version rolling mask (again)
+    setVersionMask(ASIC_DEFAULT_VERSION_MASK);
 
-    // enable and set version rolling mask to 0xFFFF (again)
-    send6(CMD_WRITE_ALL, 0x00, 0xA4, 0x90, 0x00, 0xFF, 0xFF);
+    // enable and set default version rolling mask (again)
+    setVersionMask(ASIC_DEFAULT_VERSION_MASK);
 
-    // enable and set version rolling mask to 0xFFFF (again)
-    send6(CMD_WRITE_ALL, 0x00, 0xA4, 0x90, 0x00, 0xFF, 0xFF);
+    // enable and set default version rolling mask (again)
+    setVersionMask(ASIC_DEFAULT_VERSION_MASK);
 
     int chip_counter = count_asics();
     ESP_LOGIE(chip_counter == asic_count, TAG, "%i chip(s) detected on the chain, expected %i", chip_counter, asic_count);
 
-    // enable and set version rolling mask to 0xFFFF (again)
-    send6(CMD_WRITE_ALL, 0x00, 0xA4, 0x90, 0x00, 0xFF, 0xFF);
+    // enable and set default version rolling mask (again)
+    setVersionMask(ASIC_DEFAULT_VERSION_MASK);
 
     // Reg_A8
     send6(CMD_WRITE_ALL, 0x00, 0xA8, 0x00, 0x07, 0x00, 0x00);
@@ -122,7 +122,7 @@ uint8_t BM1373::init(uint64_t frequency, uint16_t asic_count, uint32_t difficult
     // set 0x10
     setVrFrequency(vrFrequency);
 
-    send6(CMD_WRITE_ALL, 0x00, 0xA4, 0x90, 0x00, 0xFF, 0xFF);
+    setVersionMask(ASIC_DEFAULT_VERSION_MASK);
 
     return chip_counter;
 }

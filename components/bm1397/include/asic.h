@@ -47,6 +47,9 @@ typedef struct __attribute__((__packed__))
 #define SLEEP_TIME 20
 #define FREQ_MULT 25.0
 
+// BIP310 default mask for the 16 ASIC-rollable nVersion bits (bits 13..28).
+#define ASIC_DEFAULT_VERSION_MASK 0x1fffe000u
+
 static inline int next_power_of_two(int num) {
     if (num <= 1) return 1;
     int power = 1;
@@ -139,6 +142,7 @@ public:
     virtual uint16_t getSmallCoreCount() = 0;
 
     void setVrFrequency(uint32_t freq);
+    void setVersionMask(uint32_t version_mask);
     virtual uint32_t getDefaultVrFrequency() = 0;
 
     virtual uint8_t init(uint64_t frequency, uint16_t asic_count, uint32_t difficulty, uint32_t vrFrequency) = 0;

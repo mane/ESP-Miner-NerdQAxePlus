@@ -62,11 +62,12 @@ typedef struct __attribute__((__packed__)) {
 #define CAN_CMD_SET_FREQ     0x01  // uint16_le freq_mhz
 #define CAN_CMD_SET_VOLTAGE  0x02  // uint16_le voltage_mv
 #define CAN_CMD_SET_FAN      0x03  // ch(1)+mode(1)+speed(1)+target_temp(1)+overheat(1)
-#define CAN_CMD_SET_DISPLAY  0x04  // flip(1)+auto_off(1)
-#define CAN_CMD_GET_CONFIG   0x05  // no payload — slave replies with can_slave_config_t on CAN_ID_CONFIG_BASE
-#define CAN_CMD_SHUTDOWN     0xFD  // no payload — slave triggers thermal shutdown
-#define CAN_CMD_IDENTIFY     0xFE  // no payload — slave blinks display
-#define CAN_CMD_RESTART      0xFF  // no payload — slave saves NVS + restarts
+#define CAN_CMD_SET_DISPLAY       0x04  // flip(1)+auto_off(1)
+#define CAN_CMD_GET_CONFIG        0x05  // no payload — slave replies with can_slave_config_t on CAN_ID_CONFIG_BASE
+#define CAN_CMD_SET_VERSION_MASK  0x06  // uint32_le BIP310 version-rolling.mask (transient pool state)
+#define CAN_CMD_SHUTDOWN          0xFD  // no payload — slave triggers thermal shutdown
+#define CAN_CMD_IDENTIFY          0xFE  // no payload — slave blinks display
+#define CAN_CMD_RESTART           0xFF  // no payload — slave saves NVS + restarts
 
 // Multiframe SEQ byte: 0x00..0x7E = continuation, 0xFF = last frame
 #define CAN_SEQ_LAST        0xFF
