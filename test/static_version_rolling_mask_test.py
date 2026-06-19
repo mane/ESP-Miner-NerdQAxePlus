@@ -52,6 +52,14 @@ class VersionRollingMaskContractTest(unittest.TestCase):
         self.assertRegex(slave, r"asics->setVersionMask\(version_mask\)")
         self.assertIn("#define JOB_PAYLOAD_LEN (sizeof(BM1368_job) + sizeof(uint32_t))", slave)
 
+    def test_can_slave_prefilter_reconstructs_full_version_like_master_path(self):
+        slave = CAN_SLAVE.read_text()
+
+        self.assertIn("uint32_t version;", slave)
+        self.assertIn("memcpy(&version, s_jobs[result.job_id].version, 4);", slave)
+        self.assertIn("result.rolled_version | version", slave)
+        self.assertNotIn("result.rolled_version ^ version", slave)
+
 
 if __name__ == "__main__":
     unittest.main()
