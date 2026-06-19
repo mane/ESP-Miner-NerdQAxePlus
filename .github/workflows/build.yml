@@ -57,7 +57,7 @@ jobs:
     - name: Get Version Tag
       id: version_tag
       run: |
-        git fetch --tags  # Ensure all tags are fetched
+        git fetch --force --tags  # Ensure all tags are fetched even when workflow starts from a tag
         version=$(git describe --tags --abbrev=0 2>/dev/null || git rev-parse --short HEAD)
         echo "VERSION_TAG=${version}" >> $GITHUB_ENV
         echo "${version}" > version.txt
