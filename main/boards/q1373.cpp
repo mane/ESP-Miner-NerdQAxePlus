@@ -45,6 +45,7 @@ Q1373B::Q1373B() : Q1370B()
     m_theme = new ThemeGeneric();
 #endif
     m_asics = new BM1373();
+    m_vrFrequency = m_defaultVrFrequency = m_asics->getDefaultVrFrequency();
 }
 
 bool Q1373B::initBoard()
