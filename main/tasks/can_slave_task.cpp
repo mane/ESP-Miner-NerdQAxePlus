@@ -245,6 +245,19 @@ void can_slave_task(void *pvParameters)
             }
         }
 
+        // Job timeout → re-negotiate even if the CAN bus is otherwise quiet.
+        // Keep this before twai_receive(); otherwise ESP_ERR_TIMEOUT would
+        // continue the loop before the timeout check can run.
+        if (state == SLAVE_ACTIVE && last_job && (now - last_job) >= pdMS_TO_TICKS(10000)) {
+            ESP_LOGW(TAG, "No job for 10s → re-negotiating");
+            state          = SLAVE_UNASSIGNED;
+            g_can_slave_id = CAN_SLAVE_ID_UNASSIGNED;
+            last_hello     = now - pdMS_TO_TICKS(1000);
+            in_frame = false;
+            buf_len  = 0;
+            continue;
+        }
+
         twai_message_t msg;
         esp_err_t err = twai_receive(&msg, pdMS_TO_TICKS(100));
 
@@ -282,18 +295,6 @@ void can_slave_task(void *pvParameters)
         }
 
         if (state == SLAVE_UNASSIGNED) continue;
-
-        // ── Job timeout → re-negotiate ────────────────────────────────────────
-
-        if (last_job && (now - last_job) >= pdMS_TO_TICKS(10000)) {
-            ESP_LOGW(TAG, "No job for 10s → re-negotiating");
-            state          = SLAVE_UNASSIGNED;
-            g_can_slave_id = CAN_SLAVE_ID_UNASSIGNED;
-            last_hello     = now - pdMS_TO_TICKS(1000);
-            in_frame = false;
-            buf_len  = 0;
-            continue;
-        }
 
         // ── Settings commands from master ─────────────────────────────────────
 

@@ -57,6 +57,7 @@ Q1370B::Q1370B() : NerdQaxePlus()
 #endif
     m_asics = new BM1370();
     m_hasHashCounter = true;
+    m_vrFrequency = m_defaultVrFrequency = m_asics->getDefaultVrFrequency();
 }
 
 float Q1370B::getTemperature(int index)
