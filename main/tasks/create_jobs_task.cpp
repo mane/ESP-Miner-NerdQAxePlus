@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "asic.h"
 #include "mining.h"
 
 #include "global_state.h"
@@ -49,7 +50,7 @@ class MiningInfoV1 : public MiningInfoBase {
 
     uint32_t stratum_difficulty = 8192;
     uint32_t active_stratum_difficulty = 8192;
-    uint32_t version_mask = 0;
+    uint32_t version_mask = ASIC_DEFAULT_VERSION_MASK;
 
   public:
     MiningInfoV1()
@@ -311,6 +312,11 @@ void create_jobs_task(void *pvParameters)
     // CAN: per-slave rolling counters (upper 7 bits = slave_id, lower 25 = counter)
     uint32_t slave_counters[CAN_SLAVE_MAX] = {0};
 
+    bool has_active_version_mask = false;
+    uint32_t active_version_mask = 0;
+    bool has_active_slave_version_mask[CAN_SLAVE_MAX] = {false};
+    uint32_t active_slave_version_mask[CAN_SLAVE_MAX] = {0};
+
     int lastJobInterval = board->getAsicJobIntervalMs();
 
     while (1) {
@@ -362,6 +368,12 @@ void create_jobs_task(void *pvParameters)
         // set asic difficulty
         asics->setJobDifficultyMask(next_job->asic_diff);
 
+        if (!has_active_version_mask || active_version_mask != next_job->version_mask) {
+            asics->setVersionMask(next_job->version_mask);
+            active_version_mask = next_job->version_mask;
+            has_active_version_mask = true;
+        }
+
         uint64_t current_time = esp_timer_get_time();
         if (last_submit_time) {
             ESP_LOGD(TAG, "(%s) job interval %dms", active_pool_str, (int) ((current_time - last_submit_time) / 1e3));
@@ -379,7 +391,10 @@ void create_jobs_task(void *pvParameters)
 
         // --- CAN: send raw job to each slave ---
         for (uint8_t slave = 0; slave < CAN_SLAVE_MAX; slave++) {
-            if (!can_master_is_slave_active(slave)) continue;
+            if (!can_master_is_slave_active(slave)) {
+                has_active_slave_version_mask[slave] = false;
+                continue;
+            }
             uint32_t e2 = can_make_extranonce2(slave, slave_counters[slave]++);
 
             bm_job *slave_job = nullptr;
@@ -393,6 +408,14 @@ void create_jobs_task(void *pvParameters)
             }
 
             if (slave_job) {
+                if (!has_active_slave_version_mask[slave] || active_slave_version_mask[slave] != slave_job->version_mask) {
+                    uint8_t payload[1 + sizeof(slave_job->version_mask)] = {CAN_CMD_SET_VERSION_MASK};
+                    memcpy(payload + 1, &slave_job->version_mask, sizeof(slave_job->version_mask));
+                    can_send_settings_cmd(slave, payload, sizeof(payload));
+                    active_slave_version_mask[slave] = slave_job->version_mask;
+                    has_active_slave_version_mask[slave] = true;
+                }
+
                 can_send_raw_job(slave, (uint8_t) asic_job_id, slave_job);
                 slaveAsicJobs[slave].storeJob(slave_job, asic_job_id);
                 // slaveAsicJobs owns slave_job now — do not free here
