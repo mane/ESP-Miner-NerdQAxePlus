@@ -1,6 +1,6 @@
 [![](https://dcbadge.vercel.app/api/server/3E8ca2dkcC)](https://discord.gg/3E8ca2dkcC)
 
-# ESP-Miner-Nerdaxe version
+# ESP-Miner NerdQAxe+ fork
 
 > Community fork status: this repository is now maintained independently at
 > https://github.com/mane/ESP-Miner-NerdQAxePlus. It starts from
@@ -8,16 +8,35 @@
 > fixes and releases to proceed in this fork when upstream collaboration is not
 > available.
 
-| Supported Targets | ESP32-S3              |
-| ----------------- | --------------------- |
-| Required Platform | >= ESP-IDF v5.3.X       |
-| ----------------- | --------------------- |
+| Supported MCU | ESP32-S3 |
+| --- | --- |
+| Required Platform | >= ESP-IDF v5.3.X |
 
-This is a forked version from the NerdAxe miner that was modified for using on the [NerdQAxe+](https://github.com/shufps/qaxe).
+This is a forked version from the NerdAxe miner that was modified for using on the [NerdQAxe+](https://github.com/shufps/qaxe) and related Nerd*/Q* boards.
 
 Credits to the devs:
 - BitAxe devs on OSMU: @skot/ESP-Miner, @ben and @jhonny
 - NerdAxe dev @BitMaker
+
+## Supported boards
+
+The GitHub Actions release workflow currently builds the following targets:
+
+| Board ID (`BOARD=...`) | Release asset label |
+| --- | --- |
+| `NERDQAXEPLUS` | `NerdQAxe+` |
+| `NERDOCTAXEPLUS` | `NerdOCTAXE+` |
+| `NERDQAXEPLUS2` | `NerdQAxe++` |
+| `NERDAXE` | `NerdAxe` |
+| `NERDOCTAXEGAMMA` | `NerdOCTAXE-Gamma` |
+| `NERDAXEGAMMA` | `NerdAxeGamma` |
+| `NERDHAXEGAMMA` | `NerdHaxe-Gamma` |
+| `NERDEKO` | `NerdEKO` |
+| `NERDQX` | `NerdQX` |
+| `Q1370` | `Q1370` |
+| `Q1373` | `Q1373` |
+
+Factory images are named `esp-miner-factory-<Release asset label>-<TAG>.bin`, for example `esp-miner-factory-NerdQAxe+-v1.1.1-mane.5.bin`.
 
 
 ## How to flash/update firmware
@@ -26,13 +45,15 @@ The newest releases are always here:
 
 https://github.com/mane/ESP-Miner-NerdQAxePlus/releases
 
-### Recommended Method: The Webflasher
+For release/update details and the fork update channel, see [docs/RELEASES.md](docs/RELEASES.md).
 
-The [Webflasher](https://shufps.github.io/nerdqaxe-web-flasher/) (modified fork of the great [Bitaxe Webflasher](https://github.com/bitaxeorg/bitaxe-web-flasher) by [Wantclue](https://github.com/WantClue)) is the easiest method of updating all Nerd*axe variants.
+### Recommended method: browser/serial flashing or built-in updater
+
+The [Webflasher](https://shufps.github.io/nerdqaxe-web-flasher/) (modified fork of the great [Bitaxe Webflasher](https://github.com/bitaxeorg/bitaxe-web-flasher) by [Wantclue](https://github.com/WantClue)) is an easy browser/serial flashing option for Nerd*axe variants.
 
 [<img src="https://github.com/user-attachments/assets/4168f23a-bfe7-4536-91e3-7af6df9a203a" style="border:5px solid red;width:200px">](https://shufps.github.io/nerdqaxe-web-flasher/)
 
-It uses the official releases published on this repository and is always up-to-date.
+When installing this fork, use the matching factory binary from the release page above. After a fork build is installed, the built-in web UI updater is configured to query and install releases from `mane/ESP-Miner-NerdQAxePlus`.
 
 ### Other Methods
 
@@ -55,12 +76,17 @@ Then you can edit the fields like `stratumurl` and so on.
 
 #### Bitaxetool
 
-After the changes on the `config.cvs` files are done, you use the `bitaxetool` to flash factory binary and the config onto the device.
+After the changes on the `config.cvs` files are done, use `bitaxetool` to flash the matching factory binary and the config onto the device.
 
-To switch it into bootload mode, reset the device with presset `boot` button.
+To switch it into bootload mode, reset the device with the `boot` button pressed.
 
 ```
-bitaxetool --config ./config.cvs --firmware esp-miner-factory-NERDQAXEPLUS-v1.0.10.bin
+TAG=v1.1.1-mane.5  # replace with the latest release tag
+BOARD_LABEL=NerdQAxe+
+curl -L -o "esp-miner-factory-${BOARD_LABEL}-${TAG}.bin" \
+  "https://github.com/mane/ESP-Miner-NerdQAxePlus/releases/download/${TAG}/esp-miner-factory-${BOARD_LABEL}-${TAG}.bin"
+
+bitaxetool --config ./config.cvs --firmware "esp-miner-factory-${BOARD_LABEL}-${TAG}.bin"
 
 ```
 
@@ -80,7 +106,7 @@ cd docker
 cd ..
 
 export BOARD="NERDQAXEPLUS2"
-./docker/idf.sh set-target esp32-s3
+./docker/idf.sh set-target esp32s3
 
 # after each change on the source code
 ./docker/idf.sh build
@@ -121,7 +147,9 @@ The default `builder` user has `uid:gid = 1000:1000` (like the main user on *bun
 (no `idf-shell.sh` version)
 
 ```bash
-./docker/bitaxetool.sh --config config.cvs --firmware esp-miner-factory-NERDQAXEPLUS-v1.0.10.bin -p /dev/ttyACM0
+TAG=v1.1.1-mane.5  # replace with the latest release tag
+BOARD_LABEL=NerdQAxe+
+./docker/bitaxetool.sh --config config.cvs --firmware "esp-miner-factory-${BOARD_LABEL}-${TAG}.bin" -p /dev/ttyACM0
 ```
 
 ##### 3.2. Compiling & Flashing using BitAxe tool
@@ -193,6 +221,6 @@ pip install --upgrade bitaxetool
 
 <img src="https://github.com/user-attachments/assets/3c485428-5e48-4761-9717-bd88579a747d" width="600px">
 
-The NerdQaxe+ firmware supports Influx and the repository provides an installation with Grafana dashboard that can be started with a few bash commands: https://github.com/shufps/ESP-Miner-NerdQAxePlus/tree/master/monitoring
+The NerdQAxe+ firmware supports Influx and this repository provides a Grafana dashboard setup under [`monitoring/`](monitoring/).
 
 
