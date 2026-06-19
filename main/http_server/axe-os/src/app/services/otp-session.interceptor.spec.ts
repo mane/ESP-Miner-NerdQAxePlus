@@ -44,9 +44,9 @@ describe('OtpSessionInterceptor', () => {
   });
 
   it('does not leak the OTP session header to external origins', () => {
-    http.get('https://api.github.com/repos/shufps/ESP-Miner-NerdQAxePlus/releases/latest').subscribe();
+    http.get('https://api.github.com/repos/mane/ESP-Miner-NerdQAxePlus/releases/latest').subscribe();
 
-    const req = httpMock.expectOne('https://api.github.com/repos/shufps/ESP-Miner-NerdQAxePlus/releases/latest');
+    const req = httpMock.expectOne('https://api.github.com/repos/mane/ESP-Miner-NerdQAxePlus/releases/latest');
     expect(req.request.headers.has('X-OTP-Session')).toBeFalse();
     req.flush({});
   });

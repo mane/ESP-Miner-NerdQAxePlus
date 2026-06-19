@@ -1,5 +1,8 @@
 name: Build and Release ESP32 Firmware
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:  # Manual trigger only
 

@@ -17,4 +17,10 @@ describe('GithubUpdateService', () => {
   it('should be created', () => {
     expect(service).toBeTruthy();
   });
+
+  it('uses the fork release API as update source', () => {
+    expect(service['baseReleasesUrl']).toBe(
+      'https://api.github.com/repos/mane/ESP-Miner-NerdQAxePlus/releases'
+    );
+  });
 });

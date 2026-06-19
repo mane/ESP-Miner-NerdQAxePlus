@@ -19,7 +19,7 @@
 #include "macros.h"
 #include "psram_allocator.h"
 
-#define GITHUB_REPO "https://github.com/shufps/"
+#define GITHUB_RELEASE_DOWNLOAD_PREFIX "https://github.com/mane/ESP-Miner-NerdQAxePlus/releases/download/"
 
 #define FW_START 0x10000
 #define FW_LEN_MB 4
@@ -514,14 +514,14 @@ void FactoryOTAUpdate::task()
     }
 }
 
-// --- Helper: validate URL is a safe GitHub link to shufps repo
+// --- Helper: validate URL is a safe GitHub release asset link for this fork
 static bool is_safe_github_url(const char *url)
 {
     if (!url)
         return false;
 
-    // check url stats with allowed github repo url
-    if (strncasecmp(url, GITHUB_REPO, strlen(GITHUB_REPO)) != 0)
+    // Only allow factory update assets from this fork's GitHub releases.
+    if (strncasecmp(url, GITHUB_RELEASE_DOWNLOAD_PREFIX, strlen(GITHUB_RELEASE_DOWNLOAD_PREFIX)) != 0)
         return false;
 
     // Reject traversal and encoded traversal
@@ -660,7 +660,7 @@ bool FactoryOTAUpdate::trigger(const char *url, bool keep_config)
 
 /*
  * Handle OTA update from GitHub URL
- * Expects JSON body: {"url": "https://github.com/shufps/..."}
+ * Expects JSON body: {"url": "https://github.com/mane/ESP-Miner-NerdQAxePlus/releases/download/..."}
  */
 esp_err_t POST_OTA_update_from_url(httpd_req_t *req)
 {

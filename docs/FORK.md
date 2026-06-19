@@ -24,6 +24,7 @@ Use `origin/develop` as the active development branch for this fork. Keep `upstr
 - Prefer objective firmware bugs with a visible failure mode or static regression coverage.
 - Run the GitHub Actions board matrix before treating a firmware change as ready.
 - Preserve original upstream credits and avoid implying upstream endorsement.
+- For public build and update-channel steps, see `docs/RELEASES.md`.
 
 ## Current first fork-only fix
 
