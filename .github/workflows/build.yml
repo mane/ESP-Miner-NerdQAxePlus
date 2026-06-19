@@ -50,7 +50,7 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v5
       with:
         submodules: recursive
 
@@ -120,7 +120,7 @@ jobs:
 
     - name: Upload factory binary
       if: env.RELEASE_EXISTS == 'false'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: esp-miner-factory-${{ matrix.label }}-${{ env.VERSION_TAG }}.bin
         path: esp-miner-factory-${{ matrix.label }}-${{ env.VERSION_TAG }}.bin
@@ -128,7 +128,7 @@ jobs:
 
     - name: Upload BIN firmware
       if: env.RELEASE_EXISTS == 'false'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: esp-miner-${{ matrix.label }}.bin
         path: build/esp-miner-${{ matrix.label }}.bin
@@ -136,7 +136,7 @@ jobs:
 
     - name: Upload www.bin (only once)
       if: env.RELEASE_EXISTS == 'false' && matrix.board == 'NERDQAXEPLUS'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: www.bin
         path: build/www.bin
@@ -165,7 +165,7 @@ jobs:
 
     - name: Upload to Existing Release
       if: env.RELEASE_EXISTS == 'true'
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v3
       with:
         files: ${{ env.files }}
         tag_name: ${{ env.VERSION_TAG }}
