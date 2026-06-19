@@ -390,7 +390,7 @@ void can_slave_result_task(void *pvParameters)
         if (s_job_valid[result.job_id]) {
             uint32_t version;
             memcpy(&version, s_jobs[result.job_id].version, 4);
-            double diff = calc_nonce_diff(&s_jobs[result.job_id], result.nonce, result.rolled_version ^ version);
+            double diff = calc_nonce_diff(&s_jobs[result.job_id], result.nonce, result.rolled_version | version);
             uint32_t pool_diff = s_pool_diffs[result.job_id];
 
             if (diff < pool_diff) {
