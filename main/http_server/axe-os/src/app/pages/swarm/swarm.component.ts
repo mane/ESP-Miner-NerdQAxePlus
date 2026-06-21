@@ -1,7 +1,7 @@
 import { HttpClient } from '@angular/common/http';
 import { Component, OnDestroy, OnInit } from '@angular/core';
 import { FormBuilder, FormGroup, Validators, FormControl } from '@angular/forms';
-import { catchError, forkJoin, from, map, mergeMap, of, take, timeout, toArray } from 'rxjs';
+import { catchError, forkJoin, from, map, mergeMap, of, Subject, take, takeUntil, timeout, toArray } from 'rxjs';
 import { LocalStorageService } from '../../services/local-storage.service';
 import { SystemService } from 'src/app/services/system.service';
 import { NbToastrService } from '@nebular/theme';
@@ -42,6 +42,8 @@ export class SwarmComponent implements OnInit, OnDestroy {
   // Legende
   public colorLegend: { color: string; label: string; count: number }[] = [];
 
+  private destroy$ = new Subject<void>();
+
   constructor(
     private fb: FormBuilder,
     private systemService: SystemService,
@@ -62,16 +64,21 @@ export class SwarmComponent implements OnInit, OnDestroy {
     this.refreshTimeSet = storedRefreshTime;
     this.refreshIntervalControl = new FormControl(storedRefreshTime);
 
-    this.refreshIntervalControl.valueChanges.subscribe(value => {
-      this.refreshIntervalTime = value;
-      this.refreshTimeSet = value;
-      this.localStorageService.setNumber(SWARM_REFRESH_TIME, value);
-    });
+    this.refreshIntervalControl.valueChanges
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(value => {
+        this.refreshIntervalTime = value;
+        this.refreshTimeSet = value;
+        this.localStorageService.setNumber(SWARM_REFRESH_TIME, value);
+      });
   }
 
   ngOnInit(): void {
     this.systemService.getInfo()
-      .pipe(this.loadingService.lockUIUntilComplete())
+      .pipe(
+        this.loadingService.lockUIUntilComplete(),
+        takeUntil(this.destroy$)
+      )
       .subscribe({
         next: (info) => {
           this.ipAddress = info.hostip;
@@ -93,6 +100,8 @@ export class SwarmComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.destroy$.next();
+    this.destroy$.complete();
     window.clearInterval(this.refreshIntervalRef);
     this.form.reset();
   }
@@ -176,8 +185,10 @@ export class SwarmComponent implements OnInit, OnDestroy {
         ),
         128
       ),
-      toArray()
-    ).pipe(take(1)).subscribe({
+      toArray(),
+      take(1),
+      takeUntil(this.destroy$)
+    ).subscribe({
       next: (result) => {
         const validResults = result.filter((item): item is NonNullable<typeof item> => item !== null);
         const existingIps = new Set(this.swarm.map(item => item.IP));
@@ -207,7 +218,7 @@ export class SwarmComponent implements OnInit, OnDestroy {
         timeout(5000),
         catchError(() => of(null))
       )
-    }).subscribe(({ info, asic }) => {
+    }).pipe(takeUntil(this.destroy$)).subscribe(({ info, asic }) => {
       if (info?.ASICModel) {
         const supportsAsicApi = this.isValidAsicPayload(asic);
         const merged = {
@@ -252,7 +263,8 @@ export class SwarmComponent implements OnInit, OnDestroy {
       catchError(error => {
         this.toastrService.danger(`Failed to restart device at ${axe.IP}`, 'Error');
         return of(null);
-      })
+      }),
+      takeUntil(this.destroy$)
     ).subscribe(res => {
       if (res !== null) {
         this.toastrService.success(`Nerd*Axe at ${axe.IP} restarted`, 'Success');
@@ -328,8 +340,10 @@ export class SwarmComponent implements OnInit, OnDestroy {
         ),
         128
       ),
-      toArray()
-    ).pipe(take(1)).subscribe({
+      toArray(),
+      take(1),
+      takeUntil(this.destroy$)
+    ).subscribe({
       next: (result) => {
         this.swarm = result.sort(this.sortByIp.bind(this));
         this.localStorageService.setObject(SWARM_DATA, this.swarm);
