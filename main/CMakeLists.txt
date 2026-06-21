@@ -156,7 +156,7 @@ if(BUILD_WEB)
             CONFIGURE_COMMAND ${NPM_EXECUTABLE} i
             BUILD_COMMAND ${NPM_EXECUTABLE} run build
             INSTALL_COMMAND ""
-            BUILD_ALWAYS OFF
+            BUILD_ALWAYS TRUE
             BUILD_IN_SOURCE TRUE
         )
 
