@@ -241,8 +241,6 @@
     "RESET_BROWNOUT": "Resetare brownout",
     "RESET_SDIO": "Resetare SDIO",
     "RESET_NOT_SPECIFIED": "Nespecificat",
-    "ABOUT_NERDQX": " proiect a fost dezvoltat de o echipă internațională de entuziaști și lansat ca hardware deschis. NerdQX aparține inițiativei <strong>\"ORIGINAL\"</strong>, care permite utilizatorilor să afle dacă NerdQX-ul lor este original, mai mult despre aceasta",
-    "ABOUT_NERDQX_ORIGINAL": " <u>aici</u>",
     "SHUTDOWN": "Oprire",
     "SHUTDOWN_SUCCESS": "Sistemul se oprește",
     "SHUTDOWN_FAILED": "Oprire eșuată",

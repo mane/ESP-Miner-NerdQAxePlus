@@ -25,15 +25,11 @@ def _function_body(source: str, signature: str) -> str:
 
 
 class MiningPerformanceContractTest(unittest.TestCase):
-    def test_q1370_and_q1373_refresh_vr_frequency_after_replacing_asic_model(self) -> None:
-        for relative_path, signature, asic_type in (
-            ("main/boards/q1370.cpp", "Q1370B::Q1370B()", "BM1370"),
-            ("main/boards/q1373.cpp", "Q1373B::Q1373B()", "BM1373"),
-        ):
-            body = _function_body(_read(relative_path), signature)
-            replace_pos = body.index(f"m_asics = new {asic_type}();")
-            refresh_pos = body.index("m_vrFrequency = m_defaultVrFrequency = m_asics->getDefaultVrFrequency();")
-            self.assertLess(replace_pos, refresh_pos, relative_path)
+    def test_nerdqaxeplus_uses_bm1368_and_refreshes_vr_frequency(self) -> None:
+        body = _function_body(_read("main/boards/nerdqaxeplus.cpp"), "NerdQaxePlus::NerdQaxePlus()")
+        asic_pos = body.index("m_asics = new BM1368();")
+        refresh_pos = body.index("m_vrFrequency = m_defaultVrFrequency = m_asics->getDefaultVrFrequency();")
+        self.assertLess(asic_pos, refresh_pos)
 
     def test_can_slave_job_timeout_runs_even_when_bus_is_quiet(self) -> None:
         body = _function_body(_read("main/tasks/can_slave_task.cpp"), "void can_slave_task(void *pvParameters)")

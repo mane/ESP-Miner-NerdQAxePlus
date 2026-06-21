@@ -11,27 +11,7 @@ jobs:
       matrix:
         include:
           - board: NERDQAXEPLUS
-            label: NerdQAxe+
-          - board: NERDOCTAXEPLUS
-            label: NerdOCTAXE+
-          - board: NERDQAXEPLUS2
-            label: NerdQAxe++
-          - board: NERDAXE
-            label: NerdAxe
-          - board: NERDOCTAXEGAMMA
-            label: NerdOCTAXE-Gamma
-          - board: NERDAXEGAMMA
-            label: NerdAxeGamma
-          - board: NERDHAXEGAMMA
-            label: NerdHaxe-Gamma
-          - board: NERDEKO
-            label: NerdEKO
-          - board: NERDQX
-            label: NerdQX
-          - board: Q1370
-            label: Q1370
-          - board: Q1373
-            label: Q1373
+            label: NerdQAxePlus-LTS
 
     steps:
     - name: Checkout repository

@@ -25,11 +25,6 @@ def _function_body(source: str, signature: str) -> str:
 
 
 class SafePerformanceGuardsContractTest(unittest.TestCase):
-    def test_tmp451_mux_exp_stores_active_high_constructor_argument(self) -> None:
-        source = _read("main/boards/drivers/tmp451_mux_exp.cpp")
-        constructor = source[source.index("Tmp451MuxExp::Tmp451MuxExp"):source.index("esp_err_t Tmp451MuxExp::init")]
-        self.assertIn("m_mux_active_high(mux_active_high)", constructor)
-
     def test_vr_frequency_zero_is_rejected_before_register_math_and_nvs_save(self) -> None:
         asic_source = _read("components/bm1397/asic.cpp")
         vr_to_reg = _function_body(asic_source, "uint32_t Asic::vrFreqToReg")
@@ -47,12 +42,11 @@ class SafePerformanceGuardsContractTest(unittest.TestCase):
             self.assertIn("uint32_t vrFrequency = doc[\"vrFrequency\"].as<uint32_t>();", source, path)
             self.assertIn("if (vrFrequency > 0)", source, path)
 
-    def test_emc2101_fan_speed_accepts_percent_or_normalized_duty_and_saturates_register(self) -> None:
-        body = _function_body(_read("main/boards/drivers/nerdaxe/EMC2101.cpp"), "void EMC2101_set_fan_speed")
-        self.assertIn("if (percent > 1.0f) percent = percent / 100.0f;", body)
-        self.assertIn("if (percent > 1.0f) percent = 1.0f;", body)
-        self.assertIn("63.0f * percent", body)
-        self.assertIn("if (speed > 63) speed = 63;", body)
+    def test_emc2302_fan_speed_saturates_register(self) -> None:
+        body = _function_body(_read("main/boards/drivers/EMC2302.cpp"), "esp_err_t EMC2302_set_fan_speed")
+        self.assertIn("percent * 255.0", body)
+        self.assertIn("value = (value > 255) ? 255 : value;", body)
+        self.assertIn("i2c_master_register_write_byte", body)
 
 
 if __name__ == "__main__":

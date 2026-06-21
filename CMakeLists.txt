@@ -6,14 +6,20 @@ set(CMAKE_CXX_STANDARD 17)
 
 add_definitions(-DLV_LVGL_H_INCLUDE_SIMPLE)
 
-# Check if the environment variable BOARD is defined
-if(DEFINED ENV{BOARD})
-    add_compile_definitions($ENV{BOARD})
-else()
-    message(FATAL_ERROR "Environment variable BOARD is not set")
+# NerdQAxe+ LTS is intentionally single-board.
+# Accept an omitted BOARD for local convenience, but reject every non-NerdQAxe+
+# target so CI/local builds cannot silently produce firmware for other hardware.
+set(SELECTED_BOARD "NERDQAXEPLUS")
+if(DEFINED ENV{BOARD} AND NOT "$ENV{BOARD}" STREQUAL "")
+    set(SELECTED_BOARD "$ENV{BOARD}")
 endif()
 
-message(STATUS "Selected board: $ENV{BOARD}")
+if(NOT "${SELECTED_BOARD}" STREQUAL "NERDQAXEPLUS")
+    message(FATAL_ERROR "This LTS branch supports only BOARD=NERDQAXEPLUS (NerdQAxe+). Requested: ${SELECTED_BOARD}")
+endif()
+
+add_compile_definitions(NERDQAXEPLUS)
+message(STATUS "Selected board: NERDQAXEPLUS (NerdQAxe+ LTS)")
 
 set(ENV{SOURCE_DATE_EPOCH} 0)
 

@@ -103,8 +103,7 @@ void UI::splash2ScreenInit(void)
 
 bool UI::isGenericTheme() const
 {
-    LV_IMG_DECLARE(ui_img_Generic_splashscreen2_png);
-    return m_theme->getSplashscreen2() == &ui_img_Generic_splashscreen2_png;
+    return false;
 }
 
 void UI::addInitScreenOverlays()
@@ -227,7 +226,7 @@ void UI::portalScreenInit(void)
     lv_obj_set_x(ui_lbSSID, 75);
     lv_obj_set_y(ui_lbSSID, 52);
     lv_obj_set_align(ui_lbSSID, LV_ALIGN_LEFT_MID);
-    lv_label_set_text(ui_lbSSID, "NERDAXE_XXXX");
+    lv_label_set_text(ui_lbSSID, "NERDQAXE_XXXX");
     lv_obj_set_style_text_color(ui_lbSSID, lv_color_hex(0xDEDADE), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_lbSSID, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_align(ui_lbSSID, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN | LV_STATE_DEFAULT);

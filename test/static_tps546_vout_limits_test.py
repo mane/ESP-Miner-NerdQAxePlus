@@ -20,33 +20,18 @@ def _function_body(source: str, signature: str) -> str:
     raise AssertionError(f"Could not find body for {signature}")
 
 
-class Tps546VoutLimitContractTest(unittest.TestCase):
-    def test_vout_limits_are_written_as_absolute_scaled_voltages(self):
-        source = (REPO / "main/boards/drivers/rev7/TPS546.cpp").read_text()
-        body = _function_body(source, "static bool TPS546_write_vout_limit_ratios")
+class Tps53647VoltageContractTest(unittest.TestCase):
+    def test_vout_conversion_uses_absolute_voltage_and_bounds_vid_register(self):
+        source = (REPO / "main/boards/drivers/TPS53647.cpp").read_text()
+        body = _function_body(source, "uint8_t TPS53647::volt_to_vid")
 
-        # PMBus VOUT limit registers store absolute voltages.  The constants in
-        # TPS546.h are ratios relative to the current VOUT_COMMAND, so writing the
-        # raw ratio values would configure invalid limits for stacked voltage
-        # domains (for example 1.25V instead of 2.40V * 1.25).
-        self.assertIn("vout_command * ratio", body)
-        self.assertIn("float_2_ulinear16(limit)", body)
+        self.assertIn("volts - m_hwMinVoltage", body)
+        self.assertIn("/ 0.005f", body)
+        self.assertIn("register_value > 0xFF", body)
+        self.assertIn("return 0;", body)
 
-        raw_constant_writes = re.findall(
-            r"float_2_ulinear16\(\s*(TPS546_INIT_VOUT_[A-Z_]+)\s*\)",
-            body,
-        )
-        self.assertEqual([], raw_constant_writes)
-
-        for command in (
-            "PMBUS_VOUT_OV_FAULT_LIMIT",
-            "PMBUS_VOUT_OV_WARN_LIMIT",
-            "PMBUS_VOUT_MARGIN_HIGH",
-            "PMBUS_VOUT_MARGIN_LOW",
-            "PMBUS_VOUT_UV_WARN_LIMIT",
-            "PMBUS_VOUT_UV_FAULT_LIMIT",
-        ):
-            self.assertIn(command, body)
+        raw_ratio_writes = re.findall(r"float_2_ulinear16\(", body)
+        self.assertEqual([], raw_ratio_writes)
 
 
 if __name__ == "__main__":

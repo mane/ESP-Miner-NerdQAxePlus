@@ -59,7 +59,7 @@ Interactive mode (prompts for issuer & account):
 
 Non-interactive (no prompts):
 
-    python generate_totp_qr.py --issuer "NerdQAxe" --account "nerdqaxeplus2-B43A"
+    python generate_totp_qr.py --issuer "NerdQAxe" --account "nerdqaxeplus-B43A"
 
 The script prints to the console:
 
@@ -79,7 +79,7 @@ Example Output
 Z24R33BWOPGD6JQOJP7B5F2NWEEKRDFA
 
 === otpauth:// URI ===
-otpauth://totp/NerdQAxe:nerdqaxeplus2-B43A?secret=Z24R33BWOPGD6JQOJP7B5F2NWEEKRDFA&issuer=NerdQAxe
+otpauth://totp/NerdQAxe:nerdqaxeplus-B43A?secret=Z24R33BWOPGD6JQOJP7B5F2NWEEKRDFA&issuer=NerdQAxe
 
 ```
 
@@ -97,7 +97,7 @@ Make the script directly executable on Linux (optional)
 -------------------------------------------------------
 
     chmod +x generate_totp_qr.py
-    ./generate_totp_qr.py --issuer "NerdQX" --account "nerdqaxeplus2-B43A"
+    ./generate_totp_qr.py --issuer "NerdQAxe" --account "nerdqaxeplus-B43A"
 
 Leave the virtual environment
 -----------------------------

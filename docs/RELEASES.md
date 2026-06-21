@@ -20,7 +20,7 @@ The repository already has a manual GitHub Actions workflow:
 
 `.github/workflows/build.yml`
 
-It builds the full board matrix and uploads assets to an existing GitHub release whose tag matches the latest reachable git tag.
+It builds only the NerdQAxe+ LTS target and uploads assets to an existing GitHub release whose tag matches the latest reachable git tag.
 
 Important behavior:
 
@@ -59,26 +59,16 @@ gh run list --repo mane/ESP-Miner-NerdQAxePlus --workflow build.yml --limit 3
 gh run watch --repo mane/ESP-Miner-NerdQAxePlus <RUN_ID>
 ```
 
-Expected release assets include one factory image per board:
+Expected release assets include the NerdQAxe+ LTS factory image:
 
 ```text
-esp-miner-factory-NerdQAxe+-<TAG>.bin
-esp-miner-factory-NerdOCTAXE+-<TAG>.bin
-esp-miner-factory-NerdQAxe++-<TAG>.bin
-esp-miner-factory-NerdAxe-<TAG>.bin
-esp-miner-factory-NerdOCTAXE-Gamma-<TAG>.bin
-esp-miner-factory-NerdAxeGamma-<TAG>.bin
-esp-miner-factory-NerdHaxe-Gamma-<TAG>.bin
-esp-miner-factory-NerdEKO-<TAG>.bin
-esp-miner-factory-NerdQX-<TAG>.bin
-esp-miner-factory-Q1370-<TAG>.bin
-esp-miner-factory-Q1373-<TAG>.bin
+esp-miner-factory-NerdQAxePlus-LTS-<TAG>.bin
 ```
 
 and OTA firmware binaries named:
 
 ```text
-esp-miner-<BoardLabel>.bin
+esp-miner-NerdQAxePlus-LTS.bin
 www.bin
 ```
 

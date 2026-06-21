@@ -9,10 +9,7 @@ CREATE_JOBS = ROOT / "main/tasks/create_jobs_task.cpp"
 CAN_SENDER_H = ROOT / "main/tasks/can_sender.h"
 CAN_SLAVE = ROOT / "main/tasks/can_slave_task.cpp"
 BM_CHIP_FILES = [
-    ROOT / "components/bm1397/bm1366.cpp",
     ROOT / "components/bm1397/bm1368.cpp",
-    ROOT / "components/bm1397/bm1370.cpp",
-    ROOT / "components/bm1397/bm1373.cpp",
 ]
 
 

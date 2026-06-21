@@ -241,8 +241,6 @@
     "RESET_BROWNOUT": "Reset braku napięcia",
     "RESET_SDIO": "Reset SDIO",
     "RESET_NOT_SPECIFIED": "Nieokreślony",
-    "ABOUT_NERDQX": " projekt został opracowany przez międzynarodowy zespół entuzjastów i wydany jako otwarty sprzęt. NerdQX należy do inicjatywy <strong>\"ORYGINALNA\"</strong>, która pozwala użytkownikom dowiedzieć się, czy ich NerdQX jest oryginalny, więcej na ten temat",
-    "ABOUT_NERDQX_ORIGINAL": " <u>tutaj</u>",
     "SHUTDOWN": "Wyłączenie",
     "SHUTDOWN_SUCCESS": "System się wyłącza",
     "SHUTDOWN_FAILED": "Wyłączenie nie powiodło się",

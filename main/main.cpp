@@ -12,17 +12,7 @@
 #include "asic_jobs.h"
 #include "asic_result_task.h"
 #include "boards/board.h"
-#include "boards/nerdaxe.h"
-#include "boards/nerdaxegamma.h"
-#include "boards/nerdeko.h"
-#include "boards/nerdhaxegamma.h"
-#include "boards/nerdoctaxegamma.h"
-#include "boards/nerdoctaxeplus.h"
 #include "boards/nerdqaxeplus.h"
-#include "boards/nerdqaxeplus2.h"
-#include "boards/nerdqx.h"
-#include "boards/q1370.h"
-#include "boards/q1373.h"
 #include "create_jobs_task.h"
 #include "discord.h"
 #include "global_state.h"
@@ -238,39 +228,7 @@ extern "C" void app_main(void)
         ESP_ERROR_CHECK(err);
     }
 
-#ifdef NERDQAXEPLUS
     Board *board = new NerdQaxePlus();
-#endif
-#ifdef NERDQAXEPLUS2
-    Board *board = new NerdQaxePlus2();
-#endif
-#ifdef NERDOCTAXEPLUS
-    Board *board = new NerdOctaxePlus();
-#endif
-#ifdef NERDAXE
-    Board *board = new NerdAxe();
-#endif
-#ifdef NERDOCTAXEGAMMA
-    Board *board = new NerdOctaxeGamma();
-#endif
-#ifdef NERDAXEGAMMA
-    Board *board = new NerdaxeGamma();
-#endif
-#ifdef NERDHAXEGAMMA
-    Board *board = new NerdHaxeGamma();
-#endif
-#ifdef NERDEKO
-    Board *board = new NerdEko();
-#endif
-#ifdef NERDQX
-    Board *board = new NerdQX();
-#endif
-#ifdef Q1370
-    Board *board = new Q1370B();
-#endif
-#ifdef Q1373
-    Board *board = new Q1373B();
-#endif
 
     // initialize everything non-asic-specific like
     // fan and serial and load settings from nvs

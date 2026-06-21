@@ -165,8 +165,7 @@ bool Board::validateVoltage(float core_voltage) {
         return true;  // 0V = disable output
     }
     int millis = (int) (core_voltage * 1000.0f);
-    // we allow m_absMaxAsicVoltageMillis = 0 for no limit to not break what was
-    // working before on nerdaxe and nerdaxegamma
+    // m_absMaxAsicVoltageMillis = 0 means no upper voltage limit.
     if (m_absMinAsicVoltageMillis && millis < m_absMinAsicVoltageMillis) {
         ESP_LOGE(TAG, "Validation error. ASIC voltage %d is lower than absolute minimum value %d", millis, m_absMinAsicVoltageMillis);
         return false;
@@ -179,8 +178,7 @@ bool Board::validateVoltage(float core_voltage) {
 }
 
 bool Board::validateFrequency(float frequency) {
-    // we allow m_absMaxAsicFrequency = 0 for no limit to not break what was
-    // working before on nerdaxe and nerdaxegamma
+    // m_absMaxAsicFrequency = 0 means no upper frequency limit.
     if (m_absMaxAsicFrequency && frequency > (float) m_absMaxAsicFrequency) {
         ESP_LOGE(TAG, "Validation error. ASIC Frequency %.3f is higher than absolute maximum value %.3f", frequency, (float) m_absMaxAsicFrequency);
         return false;

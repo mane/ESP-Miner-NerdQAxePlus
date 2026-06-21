@@ -37,7 +37,7 @@ Device info, network status and memory. Used by the System page (polled every 5s
 ```json
 {
   "deviceModel": "NerdQAxe+",
-  "asicModel": "BM1370",
+  "asicModel": "BM1368",
   "version": "1.2.3",
   "uptimeSeconds": 86400,
   "lastResetReason": "RESET_POWERON",
@@ -181,7 +181,7 @@ Full device configuration. Used by the Settings page.
 
 ```json
 {
-  "asicModel": "BM1370",
+  "asicModel": "BM1368",
   "deviceModel": "NerdQAxe+",
   "version": "1.2.3",
   "otp": true,
