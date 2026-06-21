@@ -73,6 +73,7 @@
     <nb-card-header>{{ 'SWARM.OVERVIEW' | translate }}</nb-card-header>
 
     <nb-card-body *ngIf="swarm.length; else empty">
+      <div class="table-container">
       <table class="swarm-table">
         @let dp = hasDualPoolRows();
         <thead>
@@ -217,6 +218,7 @@
           </ng-container>
         </tbody>
       </table>
+      </div>
 
       <!-- Legend -->
       <div class="d-flex flex-wrap gap-3 mt-3 text-sm justify-content-center">
