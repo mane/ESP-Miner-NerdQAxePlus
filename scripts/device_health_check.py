@@ -74,6 +74,18 @@ def evaluate_health(
     hash_rate = _number(performance.get("hashRate"))
     if hash_rate <= 0:
         findings.append(Finding("ERROR", "hash rate is zero"))
+    configured_frequency = _number(performance.get("configuredFrequency"), _number(settings.get("frequency")))
+    effective_frequency = _number(performance.get("frequency"), _number(settings.get("effectiveFrequency")))
+    actual_frequency = _number(performance.get("actualFrequency"), effective_frequency)
+    rejected_shares = int(_number(performance.get("sharesRejected")))
+    duplicate_nonces = int(_number(performance.get("duplicateHWNonces")))
+    share_queue_drops = int(_number(performance.get("shareQueueDrops")))
+    if share_queue_drops:
+        findings.append(Finding("WARN", f"share submission queue dropped {share_queue_drops} result(s)"))
+
+    governor = performance.get("hashrateGovernor")
+    if not isinstance(governor, dict):
+        governor = settings.get("hashrateGovernor") if isinstance(settings.get("hashrateGovernor"), dict) else {}
 
     power = dashboard.get("power") if isinstance(dashboard.get("power"), dict) else {}
     watts = _number(power.get("watts"))
@@ -115,6 +127,20 @@ def evaluate_health(
         "version": version,
         "uptimeSeconds": int(_number(system.get("uptimeSeconds"))),
         "hashRateGh": hash_rate,
+        "configuredFrequencyMhz": configured_frequency,
+        "effectiveFrequencyMhz": effective_frequency,
+        "actualFrequencyMhz": actual_frequency,
+        "sharesRejected": rejected_shares,
+        "duplicateHardwareNonces": duplicate_nonces,
+        "shareQueueDrops": share_queue_drops,
+        "hashrateGovernor": {
+            "enabled": bool(governor.get("enabled")),
+            "state": str(governor.get("state") or "unknown"),
+            "reason": str(governor.get("lastReason") or "unknown"),
+            "targetFrequencyMhz": _number(governor.get("targetFrequency")),
+            "lastStableFrequencyMhz": _number(governor.get("lastStableFrequency")),
+            "utilization": _number(governor.get("utilization")),
+        },
         "powerWatts": watts,
         "efficiencyJPerTh": efficiency,
         "asicTempC": asic_temp,
@@ -169,6 +195,22 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"Hashrate {summary['hashRateGh'] / 1000.0:.3f} TH/s, "
             f"power {summary['powerWatts']:.2f} W{efficiency_text}"
+        )
+        print(
+            f"Frequency {summary['effectiveFrequencyMhz']:.2f} MHz effective "
+            f"({summary['configuredFrequencyMhz']:.0f} MHz base, "
+            f"{summary['actualFrequencyMhz']:.2f} MHz PLL)"
+        )
+        governor = summary["hashrateGovernor"]
+        print(
+            f"Governor {'enabled' if governor['enabled'] else 'disabled'}: "
+            f"{governor['state']} / {governor['reason']}, "
+            f"target {governor['targetFrequencyMhz']:.0f} MHz, "
+            f"utilization {governor['utilization']:.3f}"
+        )
+        print(
+            f"Shares rejected {summary['sharesRejected']}, duplicate nonces "
+            f"{summary['duplicateHardwareNonces']}, queue drops {summary['shareQueueDrops']}"
         )
         print(f"Temperatures ASIC {summary['asicTempC']:.1f} C, VR {summary['vrTempC']:.1f} C")
         for fan in summary["fans"]:

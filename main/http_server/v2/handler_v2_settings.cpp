@@ -17,6 +17,48 @@
 
 static const char *TAG = "http_v2_settings";
 
+static constexpr uint16_t HASHRATE_GOVERNOR_MAX_MHZ = 550;
+static constexpr uint16_t HASHRATE_GOVERNOR_LOW_VOLTAGE_MAX_MHZ = 500;
+static constexpr uint16_t HASHRATE_GOVERNOR_HIGH_FREQUENCY_MIN_MV = 1300;
+static constexpr float HASHRATE_GOVERNOR_MAX_POWER_W = 69.0f;
+
+static uint16_t normalizedGovernorMaxFrequency(Board *board, uint16_t baseFrequency,
+                                                uint16_t coreVoltageMillis)
+{
+    const uint16_t configured = Config::getHashrateGovernorMaxFrequency();
+    const uint16_t voltageCap = coreVoltageMillis < HASHRATE_GOVERNOR_HIGH_FREQUENCY_MIN_MV
+        ? (baseFrequency > HASHRATE_GOVERNOR_LOW_VOLTAGE_MAX_MHZ
+            ? baseFrequency
+            : HASHRATE_GOVERNOR_LOW_VOLTAGE_MAX_MHZ)
+        : HASHRATE_GOVERNOR_MAX_MHZ;
+    uint16_t desired = configured;
+    if (desired < baseFrequency) desired = baseFrequency;
+    if (desired > voltageCap) desired = voltageCap;
+
+    uint16_t lower = 0;
+    uint16_t upper = 0;
+    for (uint32_t option : board->getFrequencyOptions()) {
+        if (option < baseFrequency || option > voltageCap) continue;
+        if (option <= desired && (lower == 0 || option > lower)) {
+            lower = (uint16_t) option;
+        } else if (option > desired && (upper == 0 || option < upper)) {
+            upper = (uint16_t) option;
+        }
+    }
+    return lower ? lower : (upper ? upper : baseFrequency);
+}
+
+static uint16_t normalizedGovernorPowerLimit10(Board *board)
+{
+    const uint16_t configured = Config::getHashrateGovernorPowerLimit10();
+    const float minimumWatts = fmaxf(0.0f, board->getMinPin());
+    const float maximumWatts = fmaxf(minimumWatts,
+                                      fminf(HASHRATE_GOVERNOR_MAX_POWER_W, board->getMaxPin() - 1.0f));
+    const uint16_t minimum = (uint16_t) ceilf(minimumWatts * 10.0f);
+    const uint16_t maximum = (uint16_t) floorf(maximumWatts * 10.0f);
+    return configured < minimum ? minimum : (configured > maximum ? maximum : configured);
+}
+
 esp_err_t GET_V2_settings(httpd_req_t *req)
 {
     ConGuard g(http_server, req);
@@ -52,6 +94,7 @@ esp_err_t GET_V2_settings(httpd_req_t *req)
 
     // --- asic settings (current + defaults + options merged from /asic endpoint) ---
     doc["frequency"]        = board->getAsicFrequency();
+    doc["effectiveFrequency"] = board->getEffectiveAsicFrequency();
     doc["coreVoltage"]      = board->getAsicVoltageMillis();
     doc["vrFrequency"]      = board->getVrFrequency();
     doc["defaultFrequency"] = board->getDefaultAsicFrequency();
@@ -68,6 +111,21 @@ esp_err_t GET_V2_settings(httpd_req_t *req)
     {
         JsonArray arr = doc["voltageOptions"].to<JsonArray>();
         for (uint32_t v : board->getVoltageOptions()) arr.add(v);
+    }
+    {
+        PowerManagementTask::HashrateGovernorStatus governorStatus;
+        POWER_MANAGEMENT_MODULE.copyHashrateGovernorStatus(&governorStatus);
+        JsonObject governor = doc["hashrateGovernor"].to<JsonObject>();
+        governor["enabled"] = governorStatus.enabled;
+        governor["maxFrequency"] = normalizedGovernorMaxFrequency(
+            board, (uint16_t) board->getAsicFrequency(), (uint16_t) board->getAsicVoltageMillis());
+        governor["powerLimitW"] = (float) normalizedGovernorPowerLimit10(board) / 10.0f;
+        governor["effectiveFrequency"] = board->getEffectiveAsicFrequency();
+        governor["targetFrequency"] = governorStatus.targetFrequency;
+        governor["lastStableFrequency"] = governorStatus.lastStableFrequency;
+        governor["utilization"] = governorStatus.utilization;
+        governor["state"] = governorStatus.state;
+        governor["lastReason"] = governorStatus.lastReason;
     }
 
     // --- stratum / pools ---
@@ -208,6 +266,75 @@ esp_err_t PATCH_V2_settings(httpd_req_t *req)
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, fanError);
     }
 
+    // Validate the complete mining patch before persisting any field. Runtime
+    // PLL transitions may pass through intermediate values, but user-facing
+    // setpoints must be one of the board-qualified operating points.
+    if ((!doc["frequency"].isNull() && !doc["frequency"].is<uint16_t>()) ||
+        (!doc["coreVoltage"].isNull() && !doc["coreVoltage"].is<uint16_t>()) ||
+        (!doc["jobInterval"].isNull() && !doc["jobInterval"].is<uint16_t>())) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Mining settings must be unsigned integers");
+    }
+    const uint16_t requestedFrequency = doc["frequency"].is<uint16_t>()
+        ? doc["frequency"].as<uint16_t>()
+        : (uint16_t) board->getAsicFrequency();
+    const uint16_t requestedCoreVoltage = doc["coreVoltage"].is<uint16_t>()
+        ? doc["coreVoltage"].as<uint16_t>()
+        : (uint16_t) board->getAsicVoltageMillis();
+    if (doc["frequency"].is<uint16_t>() && !board->isSupportedAsicFrequency(requestedFrequency)) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Unsupported ASIC frequency");
+    }
+    if (doc["coreVoltage"].is<uint16_t>()) {
+        const uint16_t voltage = doc["coreVoltage"].as<uint16_t>();
+        if (!board->validateVoltage((float) voltage / 1000.0f)) {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "ASIC voltage outside board limits");
+        }
+    }
+    if (doc["jobInterval"].is<uint16_t>()) {
+        const uint16_t interval = doc["jobInterval"].as<uint16_t>();
+        if (interval < Board::MIN_ASIC_JOB_INTERVAL_MS || interval > Board::MAX_ASIC_JOB_INTERVAL_MS) {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Job interval must be between 100 and 5000ms");
+        }
+    }
+
+    if (!doc["hashrateGovernor"].isNull() && !doc["hashrateGovernor"].is<JsonObject>()) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Hashrate governor must be an object");
+    }
+    JsonObject governorPatch = doc["hashrateGovernor"].as<JsonObject>();
+    PowerManagementTask::HashrateGovernorStatus governorStatus;
+    POWER_MANAGEMENT_MODULE.copyHashrateGovernorStatus(&governorStatus);
+    const bool governorEnabled = !governorPatch.isNull() && governorPatch["enabled"].is<bool>()
+        ? governorPatch["enabled"].as<bool>()
+        : governorStatus.enabled;
+    const uint16_t governorMax = !governorPatch.isNull() && governorPatch["maxFrequency"].is<uint16_t>()
+        ? governorPatch["maxFrequency"].as<uint16_t>()
+        : normalizedGovernorMaxFrequency(board, requestedFrequency, requestedCoreVoltage);
+    if (!governorPatch.isNull()) {
+        if ((!governorPatch["enabled"].isNull() && !governorPatch["enabled"].is<bool>()) ||
+            (!governorPatch["maxFrequency"].isNull() && !governorPatch["maxFrequency"].is<uint16_t>()) ||
+            (!governorPatch["powerLimitW"].isNull() && !governorPatch["powerLimitW"].is<float>())) {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid hashrate governor field type");
+        }
+        if (!board->isSupportedAsicFrequency(governorMax) || governorMax > HASHRATE_GOVERNOR_MAX_MHZ) {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Governor maximum frequency is not qualified");
+        }
+        if (governorPatch["powerLimitW"].is<float>()) {
+            const float powerLimit = governorPatch["powerLimitW"].as<float>();
+            const float maxGovernorPower = fminf(HASHRATE_GOVERNOR_MAX_POWER_W, board->getMaxPin() - 1.0f);
+            if (!isfinite(powerLimit) || powerLimit < board->getMinPin() || powerLimit > maxGovernorPower) {
+                return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Governor power limit is outside the safe range");
+            }
+        }
+    }
+    if (governorEnabled && governorMax < requestedFrequency) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "Governor maximum must be at least the base frequency");
+    }
+    if (governorEnabled && governorMax > HASHRATE_GOVERNOR_LOW_VOLTAGE_MAX_MHZ &&
+        requestedCoreVoltage < HASHRATE_GOVERNOR_HIGH_FREQUENCY_MIN_MV) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "Governor frequencies above 500MHz require at least 1300mV core voltage");
+    }
+
     // --- network ---
     if (doc["ssid"].is<const char*>()) {
         Config::setWifiSSID(doc["ssid"].as<const char*>());
@@ -230,7 +357,18 @@ esp_err_t PATCH_V2_settings(httpd_req_t *req)
     }
     if (doc["jobInterval"].is<uint16_t>()) {
         uint16_t ji = doc["jobInterval"].as<uint16_t>();
-        if (ji > 0) Config::setAsicJobInterval(ji);
+        Config::setAsicJobInterval(ji);
+    }
+    if (!governorPatch.isNull()) {
+        if (governorPatch["enabled"].is<bool>()) {
+            Config::setHashrateGovernorEnabled(governorPatch["enabled"].as<bool>());
+        }
+        if (governorPatch["maxFrequency"].is<uint16_t>()) {
+            Config::setHashrateGovernorMaxFrequency(governorPatch["maxFrequency"].as<uint16_t>());
+        }
+        if (governorPatch["powerLimitW"].is<float>()) {
+            Config::setHashrateGovernorPowerLimit10((uint16_t) lroundf(governorPatch["powerLimitW"].as<float>() * 10.0f));
+        }
     }
     if (doc["stratumDifficulty"].is<uint32_t>()) {
         Config::setStratumDifficulty(doc["stratumDifficulty"].as<uint32_t>());

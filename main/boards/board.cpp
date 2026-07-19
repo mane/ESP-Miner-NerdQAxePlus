@@ -33,6 +33,25 @@ void Board::loadSettings()
     } else {
         m_asicFrequency = (int) Config::getAsicFrequency(m_asicFrequency);
     }
+    if (!m_asicFrequencies.empty() && !isSupportedAsicFrequency((uint32_t) m_asicFrequency)) {
+        const int configuredFrequency = m_asicFrequency;
+        uint32_t lowestFrequency = UINT32_MAX;
+        uint32_t fallbackFrequency = 0;
+        for (uint32_t option : m_asicFrequencies) {
+            lowestFrequency = std::min(lowestFrequency, option);
+            if (option <= (uint32_t) std::max(configuredFrequency, 0) && option > fallbackFrequency) {
+                fallbackFrequency = option;
+            }
+        }
+        if (fallbackFrequency == 0) {
+            fallbackFrequency = isSupportedAsicFrequency((uint32_t) m_defaultAsicFrequency)
+                ? (uint32_t) m_defaultAsicFrequency
+                : lowestFrequency;
+        }
+        m_asicFrequency = (int) fallbackFrequency;
+        ESP_LOGW(TAG, "unsupported configured ASIC frequency %dMHz; using qualified %dMHz",
+                 configuredFrequency, m_asicFrequency);
+    }
 
     if (m_absMaxAsicVoltageMillis) {
         m_asicVoltageMillis = std::min((int) Config::getAsicVoltage(m_asicVoltageMillis), m_absMaxAsicVoltageMillis);
@@ -40,7 +59,13 @@ void Board::loadSettings()
         m_asicVoltageMillis = (int) Config::getAsicVoltage(m_asicVoltageMillis);
     }
 
-    m_asicJobIntervalMs = Config::getAsicJobInterval(m_asicJobIntervalMs);
+    const int configuredJobInterval = Config::getAsicJobInterval(m_asicJobIntervalMs);
+    m_asicJobIntervalMs = std::max(MIN_ASIC_JOB_INTERVAL_MS,
+                                  std::min(configuredJobInterval, MAX_ASIC_JOB_INTERVAL_MS));
+    if (m_asicJobIntervalMs != configuredJobInterval) {
+        ESP_LOGW(TAG, "invalid ASIC job interval %dms; clamped to %dms",
+                 configuredJobInterval, m_asicJobIntervalMs);
+    }
     m_fanInvertPolarity = Config::isFanPolarity(m_fanInvertPolarity);
     m_flipScreen = Config::isFlipScreenEnabled(m_flipScreen);
     m_vrFrequency = Config::getVrFrequency(m_defaultVrFrequency);
@@ -160,6 +185,13 @@ bool Board::setAsicFrequency(float frequency) {
     return m_asics->setAsicFrequency(frequency);
 }
 
+bool Board::stepAsicFrequency(float target, float maxStepMhz) {
+    if (!validateFrequency(target) || !m_asics) {
+        return false;
+    }
+    return m_asics->stepAsicFrequency(target, maxStepMhz);
+}
+
 // set and get version rolling frequency
 // requires loadSettings to update the variables
 void Board::setVrFrequency(uint32_t freq) {
@@ -193,4 +225,8 @@ bool Board::validateFrequency(float frequency) {
         return false;
     }
     return true;
+}
+
+bool Board::isSupportedAsicFrequency(uint32_t frequency) const {
+    return std::find(m_asicFrequencies.begin(), m_asicFrequencies.end(), frequency) != m_asicFrequencies.end();
 }

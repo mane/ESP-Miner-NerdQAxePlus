@@ -478,7 +478,11 @@ bool TPS53647::set_vout(float volts)
     if (vid == 0x97) {
         vid = 0x96;
     }
-    write_word(PMBUS_VOUT_COMMAND, (uint16_t) vid);
+    esp_err_t err = write_word(PMBUS_VOUT_COMMAND, (uint16_t) vid);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ERR- Failed to set Vout to %1.2f V: %s", volts, esp_err_to_name(err));
+        return false;
+    }
 
     // turn on output
     // write_byte(PMBUS_OPERATION, OPERATION_ON);
@@ -558,6 +562,5 @@ uint8_t TPS53647::get_status_temp(void)
     read_byte(PMBUS_STATUS_TEMPERATURE, &status_byte);
     return status_byte;
 }
-
 
 

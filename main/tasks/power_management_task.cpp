@@ -15,10 +15,14 @@
 #include "influx_task.h"
 #include "nvs_config.h"
 #include "serial.h"
+#include "asic_result_task.h"
 
 #define POLL_RATE 2000
 
 static const char *TAG = "power_management";
+static constexpr uint32_t HASHRATE_SAMPLE_MAX_AGE_MS = 12000;
+static constexpr uint16_t GOVERNOR_LOW_VOLTAGE_CAP_MHZ = 500;
+static constexpr uint16_t GOVERNOR_HIGH_FREQUENCY_MIN_MV = 1300;
 
 // #define MEASURE_LOOP_TIME
 
@@ -65,36 +69,30 @@ uint16_t PowerManagementTask::getFanRPM(int channel)
     return m_fanController.getRPM(channel);
 }
 
-void PowerManagementTask::checkCoreVoltageChanged()
+const char *PowerManagementTask::governorStateString() const
 {
-    static uint16_t last_core_voltage = 0;
-
-    uint16_t core_voltage = m_board->getAsicVoltageMillis();
-
-    if (core_voltage != last_core_voltage) {
-        ESP_LOGI(TAG, "setting new vcore voltage to %umV", core_voltage);
-        if (m_board->setVoltage((float) core_voltage / 1000.0)) {
-            last_core_voltage = core_voltage;
-        } else {
-            ESP_LOGE(TAG, "failed to set vcore voltage to %umV; will retry", core_voltage);
-        }
+    switch (m_governorState) {
+        case HashrateGovernor::State::DISABLED: return "disabled";
+        case HashrateGovernor::State::WARMUP: return "warmup";
+        case HashrateGovernor::State::OBSERVE: return "observe";
+        case HashrateGovernor::State::PROBE: return "probe";
+        case HashrateGovernor::State::COOLDOWN: return "cooldown";
     }
+    return "unknown";
 }
 
-void PowerManagementTask::checkAsicFrequencyChanged()
+void PowerManagementTask::copyHashrateGovernorStatus(HashrateGovernorStatus *status)
 {
-    static uint16_t last_asic_frequency = 0;
+    if (!status) return;
 
-    uint16_t asic_frequency = m_board->getAsicFrequency();
-
-    if (asic_frequency != last_asic_frequency) {
-        ESP_LOGI(TAG, "setting new asic frequency to %uMHz", asic_frequency);
-        if (!m_board->setAsicFrequency((float) asic_frequency)) {
-            ESP_LOGE(TAG, "pll setting not found for %uMHz; will retry", asic_frequency);
-        } else {
-            last_asic_frequency = asic_frequency;
-        }
-    }
+    lock();
+    status->enabled = m_governorEnabled;
+    status->targetFrequency = m_runtimeFrequencyTarget;
+    status->lastStableFrequency = m_hashrateGovernor.stableRuntimeMhz();
+    status->utilization = m_governorUtilization;
+    status->state = governorStateString();
+    status->lastReason = HashrateGovernor::Governor::reasonString(m_governorReason);
+    unlock();
 }
 
 void PowerManagementTask::checkVrFrequencyChanged()
@@ -152,6 +150,7 @@ void PowerManagementTask::create_job_timer(TimerHandle_t xTimer)
 void PowerManagementTask::trigger()
 {
     pthread_mutex_lock(&m_loop_mutex);
+    m_loopPending = true;
     pthread_cond_signal(&m_loop_cond);
     pthread_mutex_unlock(&m_loop_mutex);
 }
@@ -213,29 +212,210 @@ void PowerManagementTask::readAndPublishPowerTelemetry()
     m_voltage = vin * 1000.0;
     m_current = iin * 1000.0;
     m_power = pin;
+    if (isfinite(vin) && vin > 0.0f && isfinite(iin) && iin >= 0.0f &&
+        isfinite(pin) && pin > 0.0f && isfinite(m_vrTemp) && m_vrTemp > 0.0f) {
+        m_lastTelemetryMs = (uint64_t) (esp_timer_get_time() / 1000ULL);
+    }
 }
 
-void PowerManagementTask::applyAsicSettings()
+void PowerManagementTask::syncHashrateGovernorConfiguration(uint64_t nowMs)
 {
-    // not available when asics are shutdown
-    if (m_shutdown) {
+    const uint16_t baseFrequency = (uint16_t) m_board->getAsicFrequency();
+    uint16_t maxFrequency = Config::getHashrateGovernorMaxFrequency();
+    uint16_t powerLimit10 = Config::getHashrateGovernorPowerLimit10();
+    const bool enabled = Config::isHashrateGovernorEnabled();
+
+    if (!m_board->isSupportedAsicFrequency(maxFrequency) || maxFrequency > 550) {
+        maxFrequency = baseFrequency;
+    }
+    if (maxFrequency < baseFrequency) maxFrequency = baseFrequency;
+    bool voltageLimited = false;
+    if (m_board->getAsicVoltageMillis() < GOVERNOR_HIGH_FREQUENCY_MIN_MV &&
+        maxFrequency > GOVERNOR_LOW_VOLTAGE_CAP_MHZ) {
+        // Do not raise Vcore implicitly. At low persistent voltages, cap an
+        // automatic probe at the highest qualified point <=500MHz. If the
+        // manually selected base is already higher, merely prevent ascent.
+        uint16_t voltageSafeMax = baseFrequency;
+        for (uint32_t option : m_board->getFrequencyOptions()) {
+            if (option >= baseFrequency && option <= GOVERNOR_LOW_VOLTAGE_CAP_MHZ &&
+                option > voltageSafeMax) {
+                voltageSafeMax = (uint16_t) option;
+            }
+        }
+        voltageLimited = voltageSafeMax < maxFrequency;
+        maxFrequency = voltageSafeMax;
+    }
+    powerLimit10 = std::max<uint16_t>(300, std::min<uint16_t>(powerLimit10, 690));
+
+    if (m_governorConfigured && baseFrequency == m_governorBaseFrequency &&
+        maxFrequency == m_governorMaxFrequency && powerLimit10 == m_governorPowerLimit10 &&
+        enabled == m_governorEnabled) {
         return;
     }
 
-    // don't change frequency or voltage if
-    // asics haven't been initialized
-    if (!m_board->isInitialized()) {
+    if (voltageLimited) {
+        ESP_LOGW(TAG, "governor max limited to %uMHz: %umV Vcore is below the 1300mV high-frequency floor",
+                 maxFrequency, (unsigned int) m_board->getAsicVoltageMillis());
+    }
+
+    HashrateGovernor::Limits limits;
+    limits.powerLimitWatts = (double) powerLimit10 / 10.0;
+    limits.currentLimitAmps = std::max(0.1f, std::min(5.9f, m_board->getMaxCurrentA() - 0.1f));
+    limits.chipTemperatureLimitC = std::min(65.0, std::max(40.0, (double) Config::getFanOverheatTemp(0) - 5.0));
+    limits.vrTemperatureLimitC = std::min(75.0, std::max(40.0, (double) Config::getFanOverheatTemp(1) - 5.0));
+    limits.expectedChips = (uint16_t) m_board->getAsicCount();
+    limits.maxTelemetryAgeMs = HASHRATE_SAMPLE_MAX_AGE_MS;
+
+    std::vector<uint16_t> governorFrequencies;
+    governorFrequencies.reserve(m_board->getFrequencyOptions().size());
+    for (uint32_t frequency : m_board->getFrequencyOptions()) {
+        if (frequency > 0 && frequency <= UINT16_MAX) {
+            governorFrequencies.push_back((uint16_t) frequency);
+        }
+    }
+
+    m_governorConfigured = m_hashrateGovernor.configure(
+        governorFrequencies, baseFrequency, limits, maxFrequency);
+    if (!m_governorConfigured) {
+        ESP_LOGE(TAG, "failed to configure hashrate governor; using persistent base %uMHz", baseFrequency);
+        m_governorEnabled = false;
+        m_runtimeFrequencyTarget = baseFrequency;
+        m_governorState = HashrateGovernor::State::DISABLED;
+        m_governorReason = HashrateGovernor::Reason::INVALID_SAMPLE;
         return;
     }
 
-    // check if asic voltage changed
-    checkCoreVoltageChanged();
+    m_hashrateGovernor.setEnabled(enabled, nowMs);
+    m_governorBaseFrequency = baseFrequency;
+    m_governorMaxFrequency = maxFrequency;
+    m_governorPowerLimit10 = powerLimit10;
+    m_governorEnabled = enabled;
+    m_runtimeFrequencyTarget = baseFrequency;
+    m_governorState = m_hashrateGovernor.state();
+    m_governorReason = enabled ? HashrateGovernor::Reason::WARMING_UP : HashrateGovernor::Reason::DISABLED;
+    m_governorEmergency = false;
 
-    // check if asic frequency changed
-    checkAsicFrequencyChanged();
+    ESP_LOGI(TAG, "hashrate governor %s: base=%uMHz max=%uMHz power=%.1fW",
+             enabled ? "enabled" : "disabled", baseFrequency, maxFrequency,
+             (double) powerLimit10 / 10.0);
+}
 
-    // check if version rolling frequency changed
+void PowerManagementTask::updateHashrateGovernor(uint64_t nowMs)
+{
+    syncHashrateGovernorConfiguration(nowMs);
+    if (!m_governorConfigured) return;
+
+    HashrateGovernor::Sample sample;
+    sample.nowMs = nowMs;
+    sample.frequencyMhz = m_board->getEffectiveAsicFrequency();
+    float freshHashrateGhs = 0.0f;
+    const bool hasFreshHashrate = HASHRATE_MONITOR.getFreshSmoothedTotalChipHashrate(
+        nowMs, HASHRATE_SAMPLE_MAX_AGE_MS, &freshHashrateGhs);
+    sample.hashrateGhs = freshHashrateGhs;
+    sample.powerWatts = m_power;
+    sample.currentAmps = m_current / 1000.0f;
+    sample.chipTemperatureC = m_chipTempMax;
+    // On this board the TPS internal sensor is consistently about 10C above
+    // the external VR sensor. Normalize that documented offset, but retain the
+    // hotter of the two readings so neither sensor is ignored.
+    sample.vrTemperatureC = std::max(
+        m_vrTemp, m_vrTempInt > 10.0f ? m_vrTempInt - 10.0f : m_vrTempInt);
+    sample.detectedChips = (uint16_t) m_board->getDetectedAsicCount();
+    // M2/fan0 is the ASIC fan and has a tachometer. M1/fan1 on NerdQAxe+
+    // commonly reports 0 RPM even at 100%, so it cannot be a mandatory veto.
+    sample.fanHealthy = m_board->getNumFans() > 0 &&
+                        m_fanController.getSpeedPerc(0) >= 30 &&
+                        m_fanController.getRPM(0) > 0;
+    sample.poolReady = STRATUM_MANAGER && STRATUM_MANAGER->isAnyConnected();
+    sample.telemetryValid = m_lastTelemetryMs > 0 && m_power > 0.0f && m_voltage > 0.0f &&
+                            m_chipTempMax > 0.0f && sample.vrTemperatureC > 0.0 &&
+                            hasFreshHashrate;
+    sample.telemetryAgeMs = m_lastTelemetryMs > 0 && nowMs >= m_lastTelemetryMs
+        ? nowMs - m_lastTelemetryMs
+        : UINT64_MAX;
+    sample.rejectedShares = STRATUM_MANAGER ? STRATUM_MANAGER->getSharesRejectedSnapshot() : 0;
+    sample.duplicateShares = getDuplicateHWNonces();
+
+    const HashrateGovernor::State oldState = m_governorState;
+    const HashrateGovernor::Reason oldReason = m_governorReason;
+    const uint16_t oldTarget = m_runtimeFrequencyTarget;
+    const HashrateGovernor::Decision decision = m_hashrateGovernor.update(sample);
+
+    m_runtimeFrequencyTarget = decision.targetFrequencyMhz
+        ? decision.targetFrequencyMhz
+        : m_governorBaseFrequency;
+    if (decision.emergency) {
+        m_governorEmergency = true;
+    } else if (fabs(sample.frequencyMhz - (double) m_runtimeFrequencyTarget) <= 0.01) {
+        // Keep the wider emergency PLL step latched until the physical clock
+        // reaches the rollback target; COOLDOWN decisions themselves are holds.
+        m_governorEmergency = false;
+    }
+    m_governorReason = decision.reason;
+    m_governorState = m_hashrateGovernor.state();
+    m_governorUtilization = (float) HashrateGovernor::Governor::hashrateRatio(sample);
+
+    if (oldState != m_governorState || oldReason != m_governorReason || oldTarget != m_runtimeFrequencyTarget) {
+        ESP_LOGI(TAG, "governor state=%s reason=%s target=%uMHz utilization=%.4f",
+                 governorStateString(), HashrateGovernor::Governor::reasonString(m_governorReason),
+                 m_runtimeFrequencyTarget, m_governorUtilization);
+    }
+}
+
+void PowerManagementTask::applyRuntimeAsicSettings()
+{
+    if (m_shutdown || !m_board->isInitialized()) return;
+
     checkVrFrequencyChanged();
+
+    const uint16_t targetFrequency = m_runtimeFrequencyTarget
+        ? m_runtimeFrequencyTarget
+        : (uint16_t) m_board->getAsicFrequency();
+    const uint16_t targetVoltage = (uint16_t) m_board->getAsicVoltageMillis();
+    const float currentFrequency = m_board->getEffectiveAsicFrequency();
+
+    if (!m_appliedCoreVoltageMillis) {
+        const float actualVoltage = m_board->getVout();
+        m_appliedCoreVoltageMillis = isfinite(actualVoltage) && actualVoltage > 0.0f
+            ? (uint16_t) lroundf(actualVoltage * 1000.0f)
+            : targetVoltage;
+    }
+
+    // Upclock: raise V first when needed. Downclock: lower F first and defer a
+    // voltage reduction until a later control tick. Each PLL tick emits at
+    // most one command and never sleeps while the hardware lock is held.
+    if (currentFrequency < (float) targetFrequency - 0.01f) {
+        if (targetVoltage > m_appliedCoreVoltageMillis) {
+            ESP_LOGI(TAG, "raising vcore to %umV before frequency increase", targetVoltage);
+            if (m_board->setVoltage((float) targetVoltage / 1000.0f)) {
+                m_appliedCoreVoltageMillis = targetVoltage;
+            }
+            return;
+        }
+        const float maxStep = m_governorEmergency ? 25.0f : 6.25f;
+        if (!m_board->stepAsicFrequency((float) targetFrequency, maxStep)) {
+            ESP_LOGE(TAG, "failed runtime PLL step toward %uMHz", targetFrequency);
+        }
+        return;
+    }
+
+    if (currentFrequency > (float) targetFrequency + 0.01f) {
+        const float maxStep = m_governorEmergency ? 25.0f : 6.25f;
+        if (!m_board->stepAsicFrequency((float) targetFrequency, maxStep)) {
+            ESP_LOGE(TAG, "failed runtime PLL rollback toward %uMHz", targetFrequency);
+        }
+        return;
+    }
+
+    if (targetVoltage != m_appliedCoreVoltageMillis) {
+        ESP_LOGI(TAG, "setting vcore to %umV after PLL settled", targetVoltage);
+        if (m_board->setVoltage((float) targetVoltage / 1000.0f)) {
+            m_appliedCoreVoltageMillis = targetVoltage;
+        } else {
+            ESP_LOGE(TAG, "failed to set vcore to %umV; will retry", targetVoltage);
+        }
+    }
+
 }
 
 void PowerManagementTask::requestChipTemps()
@@ -266,13 +446,14 @@ void PowerManagementTask::task()
     uint64_t last_time = esp_timer_get_time();
     while (1) {
         pthread_mutex_lock(&m_loop_mutex);
-        pthread_cond_wait(&m_loop_cond, &m_loop_mutex); // Wait for the timer
+        while (!m_loopPending) {
+            pthread_cond_wait(&m_loop_cond, &m_loop_mutex);
+        }
+        m_loopPending = false;
         pthread_mutex_unlock(&m_loop_mutex);
 
         uint64_t start = esp_timer_get_time();
         lock();
-
-        applyAsicSettings();
 
         // request chip temps
         requestChipTemps();
@@ -331,6 +512,16 @@ void PowerManagementTask::task()
         }
         influx_set_fan(m_fanController.getSpeedPerc(0), (float) m_fanController.getRPM(0), m_fanController.getSpeedPerc(1),
                        (float) m_fanController.getRPM(1));
+
+        const uint64_t nowMs = (uint64_t) (esp_timer_get_time() / 1000ULL);
+        updateHashrateGovernor(nowMs);
+        if (SYSTEM_MODULE.getBoardError() == Board::Error::NONE) {
+            applyRuntimeAsicSettings();
+        } else {
+            // A fault handler may have disabled the buck. Forget the cached
+            // applied voltage so it cannot be mistaken for a live rail.
+            m_appliedCoreVoltageMillis = 0;
+        }
         unlock();
 #ifdef MEASURE_LOOP_TIME
         // checks if loop takes too much time

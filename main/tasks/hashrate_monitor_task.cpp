@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "mining.h"
 #include "utils.h"
+#include <math.h>
 #include <new>
 
 static const char *HR_TAG = "hashrate_monitor";
@@ -25,20 +26,24 @@ bool HashrateMonitor::start(Board *board, Asic *asic)
 
     m_asicCount = board->getAsicCount();
 
-    if (m_asicCount <= 0 || m_chipHashrate || m_prevResponse || m_prevCounter) {
+    if (m_asicCount <= 0 || m_chipHashrate || m_chipHashrateUpdatedMs ||
+        m_prevResponse || m_prevCounter) {
         ESP_LOGE(HR_TAG, "start(): invalid ASIC count or monitor already started");
         return false;
     }
 
     m_chipHashrate = new (std::nothrow) float[m_asicCount]();
+    m_chipHashrateUpdatedMs = new (std::nothrow) uint32_t[m_asicCount]();
     m_prevResponse = new (std::nothrow) int64_t[m_asicCount]();
     m_prevCounter = new (std::nothrow) uint32_t[m_asicCount]();
-    if (!m_chipHashrate || !m_prevResponse || !m_prevCounter) {
+    if (!m_chipHashrate || !m_chipHashrateUpdatedMs || !m_prevResponse || !m_prevCounter) {
         ESP_LOGE(HR_TAG, "start(): allocation failed");
         delete[] m_chipHashrate;
+        delete[] m_chipHashrateUpdatedMs;
         delete[] m_prevResponse;
         delete[] m_prevCounter;
         m_chipHashrate = nullptr;
+        m_chipHashrateUpdatedMs = nullptr;
         m_prevResponse = nullptr;
         m_prevCounter = nullptr;
         return false;
@@ -47,9 +52,11 @@ bool HashrateMonitor::start(Board *board, Asic *asic)
     if (xTaskCreatePSRAM(&HashrateMonitor::taskWrapper, "hr_monitor", 4096, (void *) this, 10, NULL) != pdPASS) {
         ESP_LOGE(HR_TAG, "start(): task creation failed");
         delete[] m_chipHashrate;
+        delete[] m_chipHashrateUpdatedMs;
         delete[] m_prevResponse;
         delete[] m_prevCounter;
         m_chipHashrate = nullptr;
+        m_chipHashrateUpdatedMs = nullptr;
         m_prevResponse = nullptr;
         m_prevCounter = nullptr;
         return false;
@@ -62,22 +69,20 @@ void HashrateMonitor::setChipHashrate(int nr, float temp) {
     if (nr < 0 || nr >= m_asicCount) {
         return;
     }
+    pthread_mutex_lock(&m_mutex);
     m_chipHashrate[nr] = temp;
+    m_chipHashrateUpdatedMs[nr] = (uint32_t) (esp_timer_get_time() / 1000ULL);
+    pthread_mutex_unlock(&m_mutex);
 }
 
 float HashrateMonitor::getChipHashrate(int nr) {
     if (nr < 0 || nr >= m_asicCount) {
         return 0.0f;
     }
-    return m_chipHashrate[nr];
-}
-
-float HashrateMonitor::getTotalChipHashrate() {
-    float total = 0.0f;
-    for (int i=0;i < m_asicCount; i++) {
-        total += m_chipHashrate[i];
-    }
-    return total;
+    pthread_mutex_lock(&m_mutex);
+    const float value = m_chipHashrate[nr];
+    pthread_mutex_unlock(&m_mutex);
+    return value;
 }
 
 void HashrateMonitor::taskWrapper(void *pv)
@@ -86,18 +91,28 @@ void HashrateMonitor::taskWrapper(void *pv)
     self->taskLoop();
 }
 
-void HashrateMonitor::publishTotalIfComplete()
+bool HashrateMonitor::publishTotalIfComplete()
 {
     size_t offset = 0;
-
-    Board* board = SYSTEM_MODULE.getBoard();
+    float total = 0.0f;
+    bool complete = true;
+    const uint32_t nowMs = (uint32_t) (esp_timer_get_time() / 1000ULL);
 
     // Iterate through each ASIC and append its count to the log message
-    for (int i = 0; i < board->getAsicCount(); i++) {
+    pthread_mutex_lock(&m_mutex);
+    for (int i = 0; i < m_asicCount; i++) {
+        const float chipHashrate = m_chipHashrate[i];
+        const uint32_t updatedMs = m_chipHashrateUpdatedMs[i];
+        total += chipHashrate;
+        if (!isfinite(chipHashrate) || chipHashrate <= 0.0f || updatedMs == 0 ||
+            nowMs - updatedMs > 2U * HR_INTERVAL) {
+            complete = false;
+        }
         size_t remaining = sizeof(m_logBuffer) - offset;
-        int written = snprintf(m_logBuffer + offset, remaining, "%.2fGH/s / ", getChipHashrate(i));
+        int written = snprintf(m_logBuffer + offset, remaining, "%.2fGH/s / ", chipHashrate);
         if (written < 0) {
-            return;
+            pthread_mutex_unlock(&m_mutex);
+            return false;
         }
         if (static_cast<size_t>(written) >= remaining) {
             offset = sizeof(m_logBuffer) - 1;
@@ -105,14 +120,18 @@ void HashrateMonitor::publishTotalIfComplete()
         }
         offset += static_cast<size_t>(written);
     }
+    pthread_mutex_unlock(&m_mutex);
     if (offset >= 2) {
         m_logBuffer[offset - 2] = 0; // remove trailing slash
     }
 
-    // apply slight 3 tap median filter to remove weird outliers
-    m_hashrate = m_median.update(getTotalChipHashrate());
+    // Apply a small median filter to remove transient counter outliers.
+    const float filteredHashrate = m_median.update(total);
+    m_hashrate.store(filteredHashrate, std::memory_order_relaxed);
 
-    ESP_LOGI(HR_TAG, "chip hashrates: %s (total: %.3fGH/s)", m_logBuffer, m_hashrate);
+    ESP_LOGI(HR_TAG, "chip hashrates: %s (total: %.3fGH/s%s)", m_logBuffer,
+             filteredHashrate, complete ? "" : ", incomplete");
+    return complete;
 }
 
 void HashrateMonitor::taskLoop()
@@ -141,17 +160,43 @@ void HashrateMonitor::taskLoop()
         // responses normally take 20-30ms, so this is safe
         vTaskDelay(pdMS_TO_TICKS(500));
 
-        publishTotalIfComplete();
+        const bool complete = publishTotalIfComplete();
 
         // apply a slight smoothing
-        if (!m_smoothedHashrate) {
-            m_smoothedHashrate = m_hashrate;
+        const float currentHashrate = m_hashrate.load(std::memory_order_relaxed);
+        float smoothedHashrate = m_smoothedHashrate.load(std::memory_order_relaxed);
+        if (!smoothedHashrate) {
+            smoothedHashrate = currentHashrate;
         }
 
-        m_smoothedHashrate = 0.5f * m_smoothedHashrate + 0.5f * m_hashrate;
+        smoothedHashrate = 0.5f * smoothedHashrate + 0.5f * currentHashrate;
+        m_smoothedHashrate.store(smoothedHashrate, std::memory_order_relaxed);
+        if (complete && isfinite(smoothedHashrate) && smoothedHashrate > 0.0f) {
+            m_lastCompleteHashrateMs.store(
+                (uint32_t) (esp_timer_get_time() / 1000ULL), std::memory_order_release);
+        }
 
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(m_period_ms));
     }
+}
+
+bool HashrateMonitor::getFreshSmoothedTotalChipHashrate(uint64_t nowMs, uint32_t maxAgeMs,
+                                                        float *hashrateGhs) const
+{
+    if (!hashrateGhs || maxAgeMs == 0) {
+        return false;
+    }
+    const uint32_t lastCompleteMs = m_lastCompleteHashrateMs.load(std::memory_order_acquire);
+    const uint32_t now32 = (uint32_t) nowMs;
+    if (lastCompleteMs == 0 || now32 - lastCompleteMs > maxAgeMs) {
+        return false;
+    }
+    const float value = m_smoothedHashrate.load(std::memory_order_relaxed);
+    if (!isfinite(value) || value <= 0.0f) {
+        return false;
+    }
+    *hashrateGhs = value;
+    return true;
 }
 
 void HashrateMonitor::onRegisterReply(uint8_t asic_idx, uint32_t counterNow)

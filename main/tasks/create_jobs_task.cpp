@@ -25,6 +25,7 @@ static const char *TAG = "create_jobs_task";
 
 pthread_mutex_t job_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t job_cond = PTHREAD_COND_INITIALIZER;
+static bool job_wake_pending = false;
 
 pthread_mutex_t current_stratum_job_mutex = PTHREAD_MUTEX_INITIALIZER;
 uint64_t miningJobGeneration[2] = {0, 0};
@@ -305,6 +306,7 @@ MiningInfoBase* miningInfo[2] = {&s_miningInfoV1[0], &s_miningInfoV1[1]};
 static void create_job_timer(TimerHandle_t xTimer)
 {
     pthread_mutex_lock(&job_mutex);
+    job_wake_pending = true;
     pthread_cond_signal(&job_cond);
     pthread_mutex_unlock(&job_mutex);
 }
@@ -312,6 +314,7 @@ static void create_job_timer(TimerHandle_t xTimer)
 void trigger_job_creation()
 {
     pthread_mutex_lock(&job_mutex);
+    job_wake_pending = true;
     pthread_cond_signal(&job_cond);
     pthread_mutex_unlock(&job_mutex);
 }
@@ -453,7 +456,10 @@ void create_jobs_task(void *pvParameters)
             vTaskSuspend(NULL);
         }
         pthread_mutex_lock(&job_mutex);
-        pthread_cond_wait(&job_cond, &job_mutex); // Wait for the timer or external trigger
+        while (!job_wake_pending) {
+            pthread_cond_wait(&job_cond, &job_mutex);
+        }
+        job_wake_pending = false;
         pthread_mutex_unlock(&job_mutex);
 
         // job interval changed via UI
@@ -465,7 +471,6 @@ void create_jobs_task(void *pvParameters)
             } else {
                 lastJobInterval = new_interval;
             }
-            continue;
         }
 
         bm_job *next_job = nullptr;

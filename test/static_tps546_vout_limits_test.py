@@ -33,6 +33,20 @@ class Tps53647VoltageContractTest(unittest.TestCase):
         raw_ratio_writes = re.findall(r"float_2_ulinear16\(", body)
         self.assertEqual([], raw_ratio_writes)
 
+    def test_set_vout_propagates_pmbus_write_errors(self):
+        source = (REPO / "main/boards/drivers/TPS53647.cpp").read_text()
+        body = _function_body(source, "bool TPS53647::set_vout")
+
+        self.assertIn(
+            "esp_err_t err = write_word(PMBUS_VOUT_COMMAND, (uint16_t) vid);",
+            body,
+        )
+        self.assertIn("if (err != ESP_OK)", body)
+        error_check = body.index("if (err != ESP_OK)")
+        success_log = body.index('ESP_LOGI(TAG, "Vout changed')
+        self.assertIn("return false;", body[error_check:success_log])
+        self.assertLess(error_check, success_log)
+
 
 if __name__ == "__main__":
     unittest.main()

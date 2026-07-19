@@ -136,6 +136,12 @@ public:
     bool processWork(task_result *result);
     void setJobDifficultyMask(int difficulty);
     bool setAsicFrequency(float frequency);
+    // Advance a runtime PLL transition by at most one step. Unlike
+    // setAsicFrequency(), this never sleeps and is safe to call from the power
+    // management control loop.
+    bool stepAsicFrequency(float target_frequency, float max_step_mhz = 6.25f);
+    float getAsicFrequency() const { return m_current_frequency; }
+    float getActualAsicFrequency() const { return m_actual_current_frequency; }
     virtual void requestChipTemp();
     virtual void resetCounter(uint8_t reg);
     virtual void readCounter(uint8_t reg);
@@ -148,5 +154,4 @@ public:
     virtual uint8_t init(uint64_t frequency, uint16_t asic_count, uint32_t difficulty, uint32_t vrFrequency) = 0;
     virtual int setMaxBaud(void);
 };
-
 

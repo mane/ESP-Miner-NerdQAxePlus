@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <stddef.h>
 #include <stdint.h>
 #include <pthread.h>
@@ -64,8 +65,10 @@ class HashrateMonitor {
 
     int m_asicCount = 0;
     float *m_chipHashrate = nullptr;
-    float m_smoothedHashrate = 0.0f;
-    float m_hashrate = 0.0f;
+    uint32_t *m_chipHashrateUpdatedMs = nullptr;
+    std::atomic<float> m_smoothedHashrate{0.0f};
+    std::atomic<float> m_hashrate{0.0f};
+    std::atomic<uint32_t> m_lastCompleteHashrateMs{0};
 
     Median<5> m_median;
 
@@ -77,7 +80,7 @@ class HashrateMonitor {
     void taskLoop();
 
     // Cycle helpers
-    void publishTotalIfComplete();
+    bool publishTotalIfComplete();
 
     // Dependencies
     Board *m_board = nullptr;
@@ -85,7 +88,6 @@ class HashrateMonitor {
 
     void setChipHashrate(int nr, float temp);
     float getChipHashrate(int nr);
-    float getTotalChipHashrate();
 
   public:
     HashrateMonitor();
@@ -98,24 +100,29 @@ class HashrateMonitor {
     // 'counterNow' is the 32-bit counter (host-endian).
     void onRegisterReply(uint8_t asic_idx, uint32_t counterNow);
 
-    float getSmoothedTotalChipHashrate() {
-      return m_smoothedHashrate;
+    float getSmoothedTotalChipHashrate() const {
+      return m_smoothedHashrate.load(std::memory_order_relaxed);
     }
 
-    float getHashrate() {
-      return m_hashrate;
+    float getHashrate() const {
+      return m_hashrate.load(std::memory_order_relaxed);
     }
+
+    // Returns a smoothed full-chain sample only when every ASIC has replied
+    // recently. A stale partial chain must never qualify an automatic upclock.
+    bool getFreshSmoothedTotalChipHashrate(uint64_t nowMs, uint32_t maxAgeMs,
+                                          float *hashrateGhs) const;
 
     // CAN slave hashrate accumulator.
     // Master calls this whenever telemetry arrives from slaves.
     void setExternalHashrate(float ghs) {
-        m_externalHashrate = ghs;
+        m_externalHashrate.store(ghs, std::memory_order_relaxed);
     }
 
-    float getExternalHashrate() {
-        return m_externalHashrate;
+    float getExternalHashrate() const {
+        return m_externalHashrate.load(std::memory_order_relaxed);
     }
 
   private:
-    float m_externalHashrate = 0.0f;
+    std::atomic<float> m_externalHashrate{0.0f};
 };

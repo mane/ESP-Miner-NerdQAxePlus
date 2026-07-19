@@ -16,6 +16,7 @@ SRCS
     "discord.cpp"
     "fan_config_safety.cpp"
     "fan_controller.cpp"
+    "hashrate_governor.cpp"
     "./pid/PID_v1_bc.cpp"
     "./pid/pid_timer.cpp"
     "./http_server/http_server.cpp"

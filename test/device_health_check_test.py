@@ -26,7 +26,23 @@ class DeviceHealthCheckTest(unittest.TestCase):
         }
         self.dashboard = {
             "system": {"shutdown": False, "boardError": 0, "overheatTemp": 70},
-            "performance": {"hashRate": 2500},
+            "performance": {
+                "hashRate": 2500,
+                "frequency": 525,
+                "configuredFrequency": 490,
+                "actualFrequency": 524.99,
+                "sharesRejected": 0,
+                "duplicateHWNonces": 0,
+                "shareQueueDrops": 0,
+                "hashrateGovernor": {
+                    "enabled": True,
+                    "state": "observe",
+                    "lastReason": "at_frequency_cap",
+                    "targetFrequency": 525,
+                    "lastStableFrequency": 525,
+                    "utilization": 0.998,
+                },
+            },
             "power": {"watts": 60},
             "thermal": {
                 "asicTemp": 55,
@@ -43,7 +59,21 @@ class DeviceHealthCheckTest(unittest.TestCase):
         )
         self.assertTrue(summary["healthy"])
         self.assertAlmostEqual(summary["efficiencyJPerTh"], 24.0)
+        self.assertEqual(summary["configuredFrequencyMhz"], 490)
+        self.assertEqual(summary["effectiveFrequencyMhz"], 525)
+        self.assertEqual(summary["hashrateGovernor"]["state"], "observe")
         self.assertEqual(findings, [])
+
+    def test_share_queue_drop_is_reported_as_a_warning(self):
+        self.dashboard["performance"]["shareQueueDrops"] = 2
+
+        summary, findings = MODULE.evaluate_health(
+            self.identify, self.system, self.dashboard, self.settings
+        )
+
+        self.assertTrue(summary["healthy"])
+        self.assertEqual(summary["shareQueueDrops"], 2)
+        self.assertTrue(any(item.level == "WARN" and "queue" in item.message for item in findings))
 
     def test_fan_stall_is_warning_but_shutdown_and_pool_loss_are_errors(self):
         self.dashboard["thermal"]["fans"][1]["rpm"] = 0

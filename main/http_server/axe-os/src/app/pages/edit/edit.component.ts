@@ -1,6 +1,6 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { Component, Input, OnInit, TemplateRef } from '@angular/core';
-import { FormBuilder, FormGroup, Validators } from '@angular/forms';
+import { AbstractControl, FormBuilder, FormGroup, ValidationErrors, Validators } from '@angular/forms';
 import { switchMap, startWith, tap, catchError, of } from 'rxjs';
 import { LoadingService } from '../../services/loading.service';
 import { SystemService } from '../../services/system.service';
@@ -12,6 +12,15 @@ import { TranslateService } from '@ngx-translate/core';
 import { ISettingsV2, ISettingsV2Fan } from '../../models/ISettingsV2';
 
 enum SupportLevel { Safe = 0, Advanced = 1, Pro = 2 }
+
+function hashrateGovernorVoltageValidator(control: AbstractControl): ValidationErrors | null {
+  const enabled = control.get('hashrateGovernor.enabled')?.value === true;
+  const maxFrequency = Number(control.get('hashrateGovernor.maxFrequency')?.value);
+  const coreVoltage = Number(control.get('coreVoltage')?.value);
+  return enabled && maxFrequency > 500 && coreVoltage < 1300
+    ? { hashrateGovernorVoltage: true }
+    : null;
+}
 
 @Component({
   selector: 'app-edit',
@@ -26,6 +35,7 @@ export class EditComponent implements OnInit {
   public dialogRef!: NbDialogRef<any>; // Store reference
 
   public frequencyOptions: { name: string; value: number }[] = [];
+  public governorFrequencyOptions: { name: string; value: number }[] = [];
   public voltageOptions: { name: string; value: number }[] = [];
 
   public firmwareUpdateProgress: number | null = null;
@@ -146,8 +156,26 @@ export class EditComponent implements OnInit {
           return { name: `${v}${suffix}`, value: v };
         });
 
+        const governor = info.hashrateGovernor;
+        const baseFrequency = Number(info.frequency);
+        const governorFrequencyOptions = freqBase.filter(option =>
+          option.value >= baseFrequency && option.value <= 550);
+        const governorFallbackFrequency = governorFrequencyOptions.find(option => option.value === 525)?.value
+          ?? governorFrequencyOptions[0]?.value
+          ?? baseFrequency;
+        const requestedGovernorMaxFrequency = typeof governor?.maxFrequency === 'number' && Number.isFinite(governor.maxFrequency)
+          ? Math.min(governor.maxFrequency, 550)
+          : governorFallbackFrequency;
+        const governorMaxFrequency = governorFrequencyOptions.some(option => option.value === requestedGovernorMaxFrequency)
+          ? requestedGovernorMaxFrequency
+          : governorFallbackFrequency;
+        const governorPowerLimitW = typeof governor?.powerLimitW === 'number' && Number.isFinite(governor.powerLimitW)
+          ? governor.powerLimitW
+          : 69.0;
+
         // Build dropdowns and, if needed, append the current custom value
         this.frequencyOptions = this.assembleDropdownOptions(freqBase, info.frequency);
+        this.governorFrequencyOptions = governorFrequencyOptions;
         this.voltageOptions = this.assembleDropdownOptions(voltBase, info.coreVoltage);
 
         // Build the form (Min/Max for volt/freq will be set dynamically right after)
@@ -202,7 +230,12 @@ export class EditComponent implements OnInit {
 
           coreVoltage: [info.coreVoltage, [Validators.min(info.absMinCoreVoltage || 1005), Validators.max(info.absMaxCoreVoltage || 1400), Validators.required]],
           frequency: [info.frequency, [Validators.required]],
-          jobInterval: [info.jobInterval, [Validators.required]],
+          hashrateGovernor: this.fb.group({
+            enabled: [governor?.enabled ?? false],
+            maxFrequency: [governorMaxFrequency, [Validators.required, Validators.min(baseFrequency), Validators.max(550)]],
+            powerLimitW: [governorPowerLimitW, [Validators.required, Validators.min(30), Validators.max(69.0)]],
+          }),
+          jobInterval: [info.jobInterval, [Validators.required, Validators.min(100), Validators.max(5000)]],
           stratumDifficulty: [info.stratumDifficulty, [Validators.required, Validators.min(1)]],
 
           stratumProtocol: [info.pools[0].protocol ?? 0, [Validators.required]],   // 0 = V1, 1 = V2
@@ -263,6 +296,25 @@ export class EditComponent implements OnInit {
           fan1PidP: [fan1cfg?.pid?.p ?? 6, [Validators.min(0), Validators.max(100), Validators.required]],
           fan1PidI: [fan1cfg?.pid?.i ?? 0.1, [Validators.min(0), Validators.max(10), Validators.required]],
           fan1PidD: [fan1cfg?.pid?.d ?? 10, [Validators.min(0), Validators.max(100), Validators.required]],
+        }, { validators: hashrateGovernorVoltageValidator });
+
+        // Keep the governed ceiling valid when the user changes the persistent
+        // base frequency in the same form submission.
+        this.form.controls['frequency'].valueChanges.subscribe(value => {
+          const nextBase = Number(value);
+          const nextOptions = freqBase.filter(option => option.value >= nextBase && option.value <= 550);
+          this.governorFrequencyOptions = nextOptions;
+
+          const maxControl = this.form.get('hashrateGovernor.maxFrequency');
+          maxControl?.setValidators([Validators.required, Validators.min(nextBase), Validators.max(550)]);
+          const currentMax = Number(maxControl?.value);
+          if (!nextOptions.some(option => option.value === currentMax)) {
+            const nextMax = nextOptions.find(option => option.value === 525)?.value
+              ?? nextOptions[0]?.value
+              ?? nextBase;
+            maxControl?.setValue(nextMax, { emitEvent: false });
+          }
+          maxControl?.updateValueAndValidity({ emitEvent: false });
         });
 
         this.lastCoinbaseVerifyMode = info.pools[0].coinbaseVerifyMode || 1;
@@ -419,6 +471,11 @@ export class EditComponent implements OnInit {
       frequency: f.frequency,
       coreVoltage: f.coreVoltage,
       vrFrequency: f.vrFrequency,
+      hashrateGovernor: {
+        enabled: !!f.hashrateGovernor.enabled,
+        maxFrequency: Number(f.hashrateGovernor.maxFrequency),
+        powerLimitW: Number(f.hashrateGovernor.powerLimitW),
+      },
       jobInterval: f.jobInterval,
       stratumDifficulty: f.stratumDifficulty,
       // Stratum

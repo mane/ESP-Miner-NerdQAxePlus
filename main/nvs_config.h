@@ -26,6 +26,9 @@
 #define NVS_CONFIG_ASIC_FREQ "asicfrequency"
 #define NVS_CONFIG_ASIC_VOLTAGE "asicvoltage"
 #define NVS_CONFIG_ASIC_JOB_INTERVAL "asicjobinterval"
+#define NVS_CONFIG_HASH_GOVERNOR_ENABLE "hashgov_en"
+#define NVS_CONFIG_HASH_GOVERNOR_MAX "hashgov_max"
+#define NVS_CONFIG_HASH_GOVERNOR_POWER10 "hashgov_pwr10"
 #define NVS_CONFIG_FLIP_SCREEN "flipscreen"
 #define NVS_CONFIG_INVERT_SCREEN "invertscreen"
 #define NVS_CONFIG_INVERT_FAN_POLARITY "invertfanpol"   // kept for downgrade compatibility
@@ -197,6 +200,9 @@ namespace Config {
     inline void setAsicFrequency(uint16_t value) { cfgSetU16(NVS_CONFIG_ASIC_FREQ, value); }
     inline void setAsicVoltage(uint16_t value) { cfgSetU16(NVS_CONFIG_ASIC_VOLTAGE, value); }
     inline void setAsicJobInterval(uint16_t value) { cfgSetU16(NVS_CONFIG_ASIC_JOB_INTERVAL, value); }
+    inline void setHashrateGovernorEnabled(bool value) { cfgSetU16(NVS_CONFIG_HASH_GOVERNOR_ENABLE, value ? 1 : 0); }
+    inline void setHashrateGovernorMaxFrequency(uint16_t value) { cfgSetU16(NVS_CONFIG_HASH_GOVERNOR_MAX, value); }
+    inline void setHashrateGovernorPowerLimit10(uint16_t value) { cfgSetU16(NVS_CONFIG_HASH_GOVERNOR_POWER10, value); }
     inline void setStratumPortNumber(uint16_t value) { cfgSetU16(NVS_CONFIG_STRATUM_PORT, value); }
     inline void setStratumFallbackPortNumber(uint16_t value) { cfgSetU16(NVS_CONFIG_STRATUM_FALLBACK_PORT, value); }
     inline void setFanSpeed(uint16_t value) { cfgSetU16(NVS_CONFIG_FAN_SPEED, value); }
@@ -304,6 +310,9 @@ namespace Config {
     inline bool isStratumFallbackTLS() { return cfgGetU16(NVS_CONFIG_STRATUM_FALLBACK_TLS, CONFIG_STRATUM_FALLBACK_TLS_VALUE) != 0; }
     inline bool isShowBlockFoundEnabled() { return cfgGetU16(NVS_CONFIG_SHOW_BLOCK_FOUND_ENABLE, CONFIG_SHOW_BLOCK_FOUND_ENABLE_VALUE) != 0; }
     inline bool isCanEnabled() { return cfgGetU16(NVS_CONFIG_CAN_ENABLED, 0) != 0; }
+    inline bool isHashrateGovernorEnabled() { return cfgGetU16(NVS_CONFIG_HASH_GOVERNOR_ENABLE, 0) != 0; }
+    inline uint16_t getHashrateGovernorMaxFrequency() { return cfgGetU16(NVS_CONFIG_HASH_GOVERNOR_MAX, 525); }
+    inline uint16_t getHashrateGovernorPowerLimit10() { return cfgGetU16(NVS_CONFIG_HASH_GOVERNOR_POWER10, 690); }
 
     // Stratum V2
     inline uint16_t getStratumProtocol() { return cfgGetU16(NVS_CONFIG_STRATUM_PROTOCOL, 0); }

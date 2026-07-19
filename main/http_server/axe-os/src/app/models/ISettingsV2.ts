@@ -29,6 +29,18 @@ export interface ISettingsV2Pool {
     coinbaseVerifyForce: boolean;
 }
 
+export interface ISettingsV2HashrateGovernor {
+    enabled: boolean;
+    maxFrequency: number;
+    powerLimitW: number;
+    effectiveFrequency: number;
+    targetFrequency: number;
+    lastStableFrequency: number;
+    utilization: number;
+    state: string;
+    lastReason: string;
+}
+
 export interface ISettingsV2 {
     // Device identity
     asicModel: eASICModel;
@@ -42,6 +54,7 @@ export interface ISettingsV2 {
 
     // ASIC settings (current + defaults + options — merged from /asic)
     frequency: number;
+    effectiveFrequency: number;
     coreVoltage: number;
     vrFrequency: number;
     defaultFrequency: number;
@@ -53,6 +66,7 @@ export interface ISettingsV2 {
     voltageOptions: number[];
     absMinCoreVoltage: number;
     absMaxCoreVoltage: number;
+    hashrateGovernor: ISettingsV2HashrateGovernor;
 
     // Stratum / pools
     poolMode: number;

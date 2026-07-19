@@ -250,50 +250,47 @@ bool Asic::doFrequencyTransition(float target_frequency) {
         return false;
     }
 
-    float step = 6.25;
-    float current = m_current_frequency;
-    float target = target_frequency;
-
-    // Determine the direction of the transition
-    float direction = (target > current) ? step : -step;
-
-    // Align to the next 6.25-dividable value if not already on one
-    if (fmod(current, step) != 0) {
-        // If ramping up, round up to the next multiple; if ramping down, round down
-        float next_dividable;
-        if (direction > 0) {
-            next_dividable = ceil(current / step) * step;
-        } else {
-            next_dividable = floor(current / step) * step;
-        }
-        current = next_dividable;
-        if (!sendHashFrequency(current)) {
-            printf("ERROR: Failed to set frequency to %.2f MHz\n", current);
+    while (fabsf(m_current_frequency - target_frequency) > 0.001f) {
+        if (!stepAsicFrequency(target_frequency)) {
+            ESP_LOGE(TAG, "Failed PLL transition toward %.2fMHz", target_frequency);
             return false;
         }
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-
-    // Ramp in the appropriate direction
-    while ((direction > 0 && current < target) || (direction < 0 && current > target)) {
-        float next_step = fmin(fabs(direction), fabs(target - current));
-        current += direction > 0 ? next_step : -next_step;
-        if (!sendHashFrequency(current)) {
-            printf("ERROR: Failed to set frequency to %.2f MHz\n", current);
-            return false;
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-
-    // The loop already sends the exact target. Only send here when no ramp step
-    // was needed (for example after alignment rounded directly onto target).
-    if (fabs(current - target) > 0.001f) {
-        if (!sendHashFrequency(target)) {
-            printf("ERROR: Failed to set frequency to %.2f MHz\n", target);
-            return false;
+        if (fabsf(m_current_frequency - target_frequency) > 0.001f) {
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
     return true;
+}
+
+bool Asic::stepAsicFrequency(float target_frequency, float max_step_mhz)
+{
+    if (!isfinite(target_frequency) || target_frequency <= 0.0f ||
+        !isfinite(max_step_mhz) || max_step_mhz <= 0.0f) {
+        ESP_LOGE(TAG, "Invalid PLL step target=%.2fMHz step=%.2fMHz", target_frequency, max_step_mhz);
+        return false;
+    }
+
+    const float delta = target_frequency - m_current_frequency;
+    if (fabsf(delta) <= 0.001f) {
+        return true;
+    }
+
+    float next_frequency = target_frequency;
+    const float remainder = fmodf(m_current_frequency, max_step_mhz);
+    const bool aligned = fabsf(remainder) <= 0.001f || fabsf(remainder - max_step_mhz) <= 0.001f;
+    if (!aligned) {
+        // Join the PLL step grid first. Do not overshoot a nearby final target.
+        const float grid_frequency = delta > 0.0f
+            ? ceilf(m_current_frequency / max_step_mhz) * max_step_mhz
+            : floorf(m_current_frequency / max_step_mhz) * max_step_mhz;
+        if ((delta > 0.0f && grid_frequency < target_frequency) ||
+            (delta < 0.0f && grid_frequency > target_frequency)) {
+            next_frequency = grid_frequency;
+        }
+    } else if (fabsf(delta) > max_step_mhz) {
+        next_frequency = m_current_frequency + copysignf(max_step_mhz, delta);
+    }
+    return sendHashFrequency(next_frequency);
 }
 
 int Asic::count_asics() {

@@ -259,8 +259,6 @@ static bool sv2_noise_selftest(secp256k1_context *secp_ctx)
 
     if (memcmp(shared_a, shared_b, 32) != 0) {
         ESP_LOGE(TAG, "SELFTEST: shared secrets MISMATCH!");
-        ESP_LOGI(TAG, "shared_a:"); ESP_LOG_BUFFER_HEX_LEVEL(TAG, shared_a, 32, ESP_LOG_INFO);
-        ESP_LOGI(TAG, "shared_b:"); ESP_LOG_BUFFER_HEX_LEVEL(TAG, shared_b, 32, ESP_LOG_INFO);
         return false;
     }
 
@@ -363,19 +361,10 @@ int sv2_noise_handshake(sv2_noise_ctx_t *ctx, esp_transport_handle_t transport,
 
     // Step 8: HKDF to derive ck and temp_k
     uint8_t temp_k[32];
-    ESP_LOGI(TAG, "ECDH shared (first 16):");
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, shared, 16, ESP_LOG_INFO);
-    ESP_LOGI(TAG, "ck before HKDF:");
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, ctx->ck, 16, ESP_LOG_INFO);
     hkdf2(ctx->ck, shared, 32, ctx->ck, temp_k);
 
-    // DEBUG: Log all the values for comparison
     ESP_LOGI(TAG, "h (AAD for decrypt):");
     ESP_LOG_BUFFER_HEX_LEVEL(TAG, ctx->h, 32, ESP_LOG_INFO);
-    ESP_LOGI(TAG, "ck after HKDF:");
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, ctx->ck, 16, ESP_LOG_INFO);
-    ESP_LOGI(TAG, "temp_k for decrypt:");
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, temp_k, 32, ESP_LOG_INFO);
     ESP_LOGI(TAG, "Ciphertext (first 32 bytes):");
     ESP_LOG_BUFFER_HEX_LEVEL(TAG, resp + 64, 32, ESP_LOG_INFO);
     ESP_LOGI(TAG, "MAC (last 16 of encrypted static):");

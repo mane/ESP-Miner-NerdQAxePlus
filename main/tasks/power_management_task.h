@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include "boards/board.h"
 #include "fan_controller.h"
+#include "hashrate_governor.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "esp_timer.h"
@@ -21,6 +22,7 @@ class PowerManagementTask {
   protected:
     pthread_mutex_t m_loop_mutex = PTHREAD_MUTEX_INITIALIZER;
     pthread_cond_t m_loop_cond = PTHREAD_COND_INITIALIZER;
+    bool m_loopPending = false;
 
     SemaphoreHandle_t m_mutex;
     TimerHandle_t m_timer;
@@ -36,11 +38,26 @@ class PowerManagementTask {
     FanController m_fanController;
     Board* m_board = nullptr;
 
-    void checkCoreVoltageChanged();
-    void checkAsicFrequencyChanged();
+    HashrateGovernor::Governor m_hashrateGovernor;
+    HashrateGovernor::Reason m_governorReason = HashrateGovernor::Reason::DISABLED;
+    HashrateGovernor::State m_governorState = HashrateGovernor::State::DISABLED;
+    uint64_t m_lastTelemetryMs = 0;
+    uint16_t m_runtimeFrequencyTarget = 0;
+    uint16_t m_appliedCoreVoltageMillis = 0;
+    uint16_t m_governorBaseFrequency = 0;
+    uint16_t m_governorMaxFrequency = 0;
+    uint16_t m_governorPowerLimit10 = 0;
+    bool m_governorEnabled = false;
+    bool m_governorConfigured = false;
+    bool m_governorEmergency = false;
+    float m_governorUtilization = 0.0f;
+
     void checkVrFrequencyChanged();
     void readAndPublishPowerTelemetry();
-    void applyAsicSettings();
+    void syncHashrateGovernorConfiguration(uint64_t nowMs);
+    void updateHashrateGovernor(uint64_t nowMs);
+    void applyRuntimeAsicSettings();
+    const char *governorStateString() const;
     void task();
 
     bool startTimer();
@@ -50,6 +67,15 @@ class PowerManagementTask {
     void requestChipTemps();
 
   public:
+    struct HashrateGovernorStatus {
+        bool enabled = false;
+        uint16_t targetFrequency = 0;
+        uint16_t lastStableFrequency = 0;
+        float utilization = 0.0f;
+        const char *state = "disabled";
+        const char *lastReason = "disabled";
+    };
+
     PowerManagementTask();
 
     // synchronized rebooting to now mess up i2c comms
@@ -84,6 +110,9 @@ class PowerManagementTask {
     }
 
     uint16_t getFanRPM(int channel);
+
+    // Copies a coherent API snapshot under the task's recursive mutex.
+    void copyHashrateGovernorStatus(HashrateGovernorStatus *status);
 
     uint16_t getFanPerc(int ch = 0)
     {

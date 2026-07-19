@@ -13,12 +13,11 @@
 #include "fan_settings_patch.h"
 
 #include "ping_task.h"
+#include "tasks/asic_result_task.h"
 
 static const char *TAG = "http_system";
 
 #define VR_FREQUENCY_ENABLED
-
-uint64_t getDuplicateHWNonces();
 
 /* Simple handler for getting system handler */
 esp_err_t GET_system_info(httpd_req_t *req)
@@ -304,6 +303,40 @@ esp_err_t PATCH_update_settings(httpd_req_t *req)
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, fanError);
     }
 
+    if ((!doc["frequency"].isNull() && !doc["frequency"].is<uint16_t>()) ||
+        (!doc["coreVoltage"].isNull() && !doc["coreVoltage"].is<uint16_t>()) ||
+        (!doc["jobInterval"].isNull() && !doc["jobInterval"].is<uint16_t>())) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Mining settings must be unsigned integers");
+    }
+    if (doc["frequency"].is<uint16_t>() &&
+        !board->isSupportedAsicFrequency(doc["frequency"].as<uint16_t>())) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Unsupported ASIC frequency");
+    }
+    if (doc["frequency"].is<uint16_t>() && Config::isHashrateGovernorEnabled()) {
+        const uint16_t governorMax = Config::getHashrateGovernorMaxFrequency();
+        if (board->isSupportedAsicFrequency(governorMax) && governorMax <= 550 &&
+            doc["frequency"].as<uint16_t>() > governorMax) {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                       "ASIC frequency exceeds the enabled governor maximum");
+        }
+    }
+    if (doc["coreVoltage"].is<uint16_t>() && Config::isHashrateGovernorEnabled() &&
+        Config::getHashrateGovernorMaxFrequency() > 500 &&
+        doc["coreVoltage"].as<uint16_t>() < 1300) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "Governor frequencies above 500MHz require at least 1300mV core voltage");
+    }
+    if (doc["coreVoltage"].is<uint16_t>() &&
+        !board->validateVoltage((float) doc["coreVoltage"].as<uint16_t>() / 1000.0f)) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "ASIC voltage outside board limits");
+    }
+    if (doc["jobInterval"].is<uint16_t>()) {
+        const uint16_t interval = doc["jobInterval"].as<uint16_t>();
+        if (interval < Board::MIN_ASIC_JOB_INTERVAL_MS || interval > Board::MAX_ASIC_JOB_INTERVAL_MS) {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Job interval must be between 100 and 5000ms");
+        }
+    }
+
     if (doc["ssid"].is<const char*>()) {
         Config::setWifiSSID(doc["ssid"].as<const char*>());
     }
@@ -327,9 +360,7 @@ esp_err_t PATCH_update_settings(httpd_req_t *req)
     }
     if (doc["jobInterval"].is<uint16_t>()) {
         uint16_t jobInterval = doc["jobInterval"].as<uint16_t>();
-        if (jobInterval > 0) {
-            Config::setAsicJobInterval(jobInterval);
-        }
+        Config::setAsicJobInterval(jobInterval);
     }
     if (doc["stratumDifficulty"].is<uint32_t>()) {
         Config::setStratumDifficulty(doc["stratumDifficulty"].as<uint32_t>());

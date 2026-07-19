@@ -173,6 +173,11 @@ class StratumManager {
     virtual uint64_t getSharesAccepted() = 0;
     virtual uint64_t getSharesRejected() = 0;
 
+    uint64_t getSharesRejectedSnapshot() {
+        PThreadGuard lock(m_mutex);
+        return getSharesRejected();
+    }
+
     uint32_t getTotalFoundBlocks() {
         return m_totalFoundBlocks;
     }

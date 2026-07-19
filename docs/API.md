@@ -92,9 +92,21 @@ Real-time mining telemetry. Used by the Home page (polled every 2s).
     "bestSessionDiff": 234567.89,
     "sharesAccepted": 4200,
     "sharesRejected": 3,
+    "duplicateHWNonces": 0,
+    "shareQueueDrops": 0,
     "frequency": 525,
+    "configuredFrequency": 490,
+    "actualFrequency": 524.99,
     "asicCount": 4,
-    "smallCoreCount": 672
+    "smallCoreCount": 1276,
+    "hashrateGovernor": {
+      "enabled": true,
+      "targetFrequency": 525,
+      "lastStableFrequency": 525,
+      "utilization": 0.998,
+      "state": "observe",
+      "lastReason": "at_frequency_cap"
+    }
   },
   "power": {
     "watts": 15.2,
@@ -187,16 +199,30 @@ Full device configuration. Used by the Settings page.
   "otp": true,
   "can": { "hasExtension": false, "enabled": false },
 
-  "frequency": 525,
-  "coreVoltage": 1150,
+  "frequency": 490,
+  "effectiveFrequency": 525,
+  "coreVoltage": 1300,
   "vrFrequency": 500,
   "defaultFrequency": 490,
   "defaultCoreVoltage": 1150,
   "defaultVrFrequency": 500,
   "ecoFrequency": 400,
   "ecoCoreVoltage": 1100,
-  "frequencyOptions": [400, 450, 490, 525, 550, 575, 600],
-  "voltageOptions": [1000, 1050, 1100, 1150, 1200, 1250],
+  "frequencyOptions": [400, 425, 450, 475, 490, 500, 525, 540, 550],
+  "voltageOptions": [1100, 1150, 1200, 1250, 1300, 1350],
+  "absMinCoreVoltage": 1050,
+  "absMaxCoreVoltage": 1400,
+  "hashrateGovernor": {
+    "enabled": true,
+    "maxFrequency": 525,
+    "powerLimitW": 69.0,
+    "effectiveFrequency": 525,
+    "targetFrequency": 525,
+    "lastStableFrequency": 525,
+    "utilization": 0.998,
+    "state": "observe",
+    "lastReason": "at_frequency_cap"
+  },
 
   "poolMode": 0,
   "poolBalance": 0,
@@ -255,7 +281,13 @@ Accepts the same structure as `GET /api/v2/settings`. Pool settings use the `poo
   "wifiPass": "secret",
 
   "frequency": 525,
-  "coreVoltage": 1150,
+  "coreVoltage": 1300,
+  "hashrateGovernor": {
+    "enabled": true,
+    "maxFrequency": 550,
+    "powerLimitW": 69.0
+  },
+  "jobInterval": 1200,
   "stratumDifficulty": 1000,
 
   "poolMode": 0,
@@ -294,6 +326,17 @@ Accepts the same structure as `GET /api/v2/settings`. Pool settings use the `poo
   "canMaster": false
 }
 ```
+
+Mining setpoints are validated before anything is saved: `frequency` and the
+governor ceiling must be entries from `frequencyOptions`, the governor ceiling
+must not be below the persistent base while enabled, `powerLimitW` must be
+between 30 W and 69 W, and `jobInterval` must be between 100 ms and 5000 ms.
+When the governor is enabled, a ceiling above 500 MHz requires at least
+1300 mV core voltage; this is checked both when enabling/upclocking and when
+lowering the voltage of an already governed miner. The 69 W comparison is
+strict, while the board's independent 70 W and 5.9 A guards remain active.
+The adaptive governor is opt-in; when disabled, the persistent `frequency`
+continues to be applied exactly as before.
 
 **Response**: `200 OK` (empty body). Device subsystems are automatically reloaded after saving.
 

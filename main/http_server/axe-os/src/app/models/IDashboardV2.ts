@@ -18,9 +18,21 @@ export interface IDashboardV2Performance {
     bestSessionDiff: number;
     sharesAccepted: number;
     sharesRejected: number;
+    duplicateHWNonces: number;
+    shareQueueDrops: number;
     frequency: number;
+    configuredFrequency: number;
+    actualFrequency: number;
     asicCount: number;
     smallCoreCount: number;
+    hashrateGovernor: {
+        enabled: boolean;
+        targetFrequency: number;
+        lastStableFrequency: number;
+        utilization: number;
+        state: string;
+        lastReason: string;
+    };
 }
 
 export interface IDashboardV2Power {

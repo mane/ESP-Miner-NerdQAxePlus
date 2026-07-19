@@ -9,6 +9,9 @@
 
 class Board {
 public:
+    static constexpr int MIN_ASIC_JOB_INTERVAL_MS = 100;
+    static constexpr int MAX_ASIC_JOB_INTERVAL_MS = 5000;
+
     enum Error {
         NONE,
         TEMP_FAULT,
@@ -125,11 +128,14 @@ public:
     int getVersion();
     const char *getAsicModel();
     int getAsicCount();
+    int getDetectedAsicCount() const { return m_chipsDetected; }
     int getAsicJobIntervalMs();
     uint32_t getInitialASICDifficulty();
 
     virtual bool setAsicFrequency(float f);
+    virtual bool stepAsicFrequency(float target, float maxStepMhz = 6.25f);
     bool validateFrequency(float frequency);
+    bool isSupportedAsicFrequency(uint32_t frequency) const;
     bool validateVoltage(float core_voltage);
 
     void setVrFrequency(uint32_t freq);
@@ -220,6 +226,16 @@ public:
     int getAsicFrequency()
     {
         return m_asicFrequency;
+    }
+
+    float getEffectiveAsicFrequency() const
+    {
+        return m_asics ? m_asics->getAsicFrequency() : (float) m_asicFrequency;
+    }
+
+    float getActualAsicFrequency() const
+    {
+        return m_asics ? m_asics->getActualAsicFrequency() : (float) m_asicFrequency;
     }
 
     int getAbsMaxAsicFrequency() {

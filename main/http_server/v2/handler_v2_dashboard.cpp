@@ -12,6 +12,7 @@
 #include "http_utils.h"
 #include "ping_task.h"
 #include "tasks/can_master_task.h"
+#include "tasks/asic_result_task.h"
 
 static const char *TAG = "http_v2_dashboard";
 
@@ -87,9 +88,22 @@ esp_err_t GET_V2_dashboard(httpd_req_t *req)
         perf["bestSessionDiff"] = STRATUM_MANAGER->getBestSessionDiff();
         perf["sharesAccepted"]  = STRATUM_MANAGER->getSharesAccepted();
         perf["sharesRejected"]  = STRATUM_MANAGER->getSharesRejected();
-        perf["frequency"]       = board->getAsicFrequency();
+        perf["duplicateHWNonces"] = getDuplicateHWNonces();
+        perf["shareQueueDrops"] = getShareQueueDrops();
+        perf["frequency"]       = board->getEffectiveAsicFrequency();
+        perf["configuredFrequency"] = board->getAsicFrequency();
+        perf["actualFrequency"] = board->getActualAsicFrequency();
         perf["asicCount"]       = board->getAsicCount();
         perf["smallCoreCount"]  = board->getAsics() ? board->getAsics()->getSmallCoreCount() : 0;
+        PowerManagementTask::HashrateGovernorStatus governorStatus;
+        POWER_MANAGEMENT_MODULE.copyHashrateGovernorStatus(&governorStatus);
+        JsonObject governor = perf["hashrateGovernor"].to<JsonObject>();
+        governor["enabled"] = governorStatus.enabled;
+        governor["targetFrequency"] = governorStatus.targetFrequency;
+        governor["lastStableFrequency"] = governorStatus.lastStableFrequency;
+        governor["utilization"] = governorStatus.utilization;
+        governor["state"] = governorStatus.state;
+        governor["lastReason"] = governorStatus.lastReason;
     }
 
     // --- power ---

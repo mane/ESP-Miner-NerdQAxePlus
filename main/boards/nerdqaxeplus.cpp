@@ -47,11 +47,14 @@ NerdQaxePlus::NerdQaxePlus() : Board() {
     m_asicModel = "BM1368";
     m_asicCount = 4;
     m_asicJobIntervalMs = 1200;
-    m_asicFrequencies = {400, 425, 450, 475, 490, 500, 525, 550, 575};
+    // 575MHz exceeds the qualified 70W / 6A board envelope on real hardware.
+    // 540MHz is an exact BM1368 PLL point and gives the governor a sustained
+    // step above 525MHz when a board cannot thermally hold the 550MHz ceiling.
+    m_asicFrequencies = {400, 425, 450, 475, 490, 500, 525, 540, 550};
     m_asicVoltages = {1100, 1150, 1200, 1250, 1300, 1350};
     m_defaultAsicFrequency = m_asicFrequency = 490;
     m_defaultAsicVoltageMillis = m_asicVoltageMillis = 1250; // default voltage
-    m_absMaxAsicFrequency = 800;
+    m_absMaxAsicFrequency = 550;
     m_absMinAsicVoltageMillis = 1050;
     m_absMaxAsicVoltageMillis = 1400;
     m_initVoltageMillis = 1250;
