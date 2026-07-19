@@ -172,7 +172,9 @@ esp_err_t GET_V2_dashboard(httpd_req_t *req)
                 bh["pool"]              = p;
                 bh["blockHeight"]       = cb.block_height;
                 bh["networkDifficulty"] = cb.network_difficulty;
-                bh["scriptSig"]         = cb.scriptsig;
+                // cb is stack-local and const; JsonString forces ArduinoJson to
+                // copy the array instead of linking it as static storage.
+                bh["scriptSig"]         = JsonString(cb.scriptsig, false);
                 if (Config::getCoinbaseVerifyMode(p) > 0) {
                     bh["coinbaseValueTotalSatoshis"] = cb.total_value_satoshis;
                     bh["coinbaseValueUserSatoshis"]  = cb.user_value_satoshis;
