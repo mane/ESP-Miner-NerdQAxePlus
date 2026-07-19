@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "mining.h"
 #include "utils.h"
+#include <new>
 
 static const char *HR_TAG = "hashrate_monitor";
 static constexpr uint8_t REG_NONCE_TOTAL_CNT = 0x90;
@@ -24,13 +25,35 @@ bool HashrateMonitor::start(Board *board, Asic *asic)
 
     m_asicCount = board->getAsicCount();
 
-    m_chipHashrate = new float[m_asicCount]();
+    if (m_asicCount <= 0 || m_chipHashrate || m_prevResponse || m_prevCounter) {
+        ESP_LOGE(HR_TAG, "start(): invalid ASIC count or monitor already started");
+        return false;
+    }
 
-    m_prevResponse = new int64_t[m_asicCount]();
-    m_prevCounter = new uint32_t[m_asicCount]();
+    m_chipHashrate = new (std::nothrow) float[m_asicCount]();
+    m_prevResponse = new (std::nothrow) int64_t[m_asicCount]();
+    m_prevCounter = new (std::nothrow) uint32_t[m_asicCount]();
+    if (!m_chipHashrate || !m_prevResponse || !m_prevCounter) {
+        ESP_LOGE(HR_TAG, "start(): allocation failed");
+        delete[] m_chipHashrate;
+        delete[] m_prevResponse;
+        delete[] m_prevCounter;
+        m_chipHashrate = nullptr;
+        m_prevResponse = nullptr;
+        m_prevCounter = nullptr;
+        return false;
+    }
 
-
-    xTaskCreatePSRAM(&HashrateMonitor::taskWrapper, "hr_monitor", 4096, (void *) this, 10, NULL);
+    if (xTaskCreatePSRAM(&HashrateMonitor::taskWrapper, "hr_monitor", 4096, (void *) this, 10, NULL) != pdPASS) {
+        ESP_LOGE(HR_TAG, "start(): task creation failed");
+        delete[] m_chipHashrate;
+        delete[] m_prevResponse;
+        delete[] m_prevCounter;
+        m_chipHashrate = nullptr;
+        m_prevResponse = nullptr;
+        m_prevCounter = nullptr;
+        return false;
+    }
     ESP_LOGI(HR_TAG, "started (period=%lums)", m_period_ms);
     return true;
 }
@@ -71,7 +94,16 @@ void HashrateMonitor::publishTotalIfComplete()
 
     // Iterate through each ASIC and append its count to the log message
     for (int i = 0; i < board->getAsicCount(); i++) {
-        offset += snprintf(m_logBuffer + offset, sizeof(m_logBuffer) - offset, "%.2fGH/s / ", getChipHashrate(i));
+        size_t remaining = sizeof(m_logBuffer) - offset;
+        int written = snprintf(m_logBuffer + offset, remaining, "%.2fGH/s / ", getChipHashrate(i));
+        if (written < 0) {
+            return;
+        }
+        if (static_cast<size_t>(written) >= remaining) {
+            offset = sizeof(m_logBuffer) - 1;
+            break;
+        }
+        offset += static_cast<size_t>(written);
     }
     if (offset >= 2) {
         m_logBuffer[offset - 2] = 0; // remove trailing slash
@@ -125,7 +157,7 @@ void HashrateMonitor::taskLoop()
 void HashrateMonitor::onRegisterReply(uint8_t asic_idx, uint32_t counterNow)
 {
     if (asic_idx >= m_asicCount) {
-        ESP_LOGE(HR_TAG, "respnse for invalid asic %d", (int) asic_idx);
+        ESP_LOGE(HR_TAG, "response for invalid ASIC %d", (int) asic_idx);
         return;
     }
 
@@ -140,6 +172,13 @@ void HashrateMonitor::onRegisterReply(uint8_t asic_idx, uint32_t counterNow)
 
     int64_t timeDelta = now - m_prevResponse[asic_idx];
     uint32_t counterDelta = counterNow - m_prevCounter[asic_idx];
+
+    if (timeDelta <= 0) {
+        ESP_LOGW(HR_TAG, "ignoring non-monotonic counter timestamp for ASIC %d", (int)asic_idx);
+        m_prevCounter[asic_idx] = counterNow;
+        m_prevResponse[asic_idx] = now;
+        return;
+    }
 
     double chip_ghs = (double) counterDelta * (double) 0x100000000uLL / (double) timeDelta / 1000.0;
 //    ESP_LOGE("XXX", "m_prevResponse[%d]=%lld now=%lld m_prevCounter[%d]=%lu counterNow=%lu timeDelta=%llu counterDelta=%lu chip_ghs=%.3f",

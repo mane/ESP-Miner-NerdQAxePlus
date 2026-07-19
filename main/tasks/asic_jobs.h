@@ -23,16 +23,31 @@ protected:
         pthread_mutex_unlock(&m_validJobsLock);
     }
 
-    bm_job *cloneBmJob(bm_job *src)
+    bm_job *cloneBmJob(const bm_job *src)
     {
-        bm_job *dst = (bm_job *) MALLOC(sizeof(bm_job));
+        if (!src || !src->extranonce2 || !src->jobid) {
+            return nullptr;
+        }
+
+        bm_job *dst = (bm_job *) CALLOC(1, sizeof(bm_job));
+        if (!dst) {
+            return nullptr;
+        }
 
         // copy all
         memcpy(dst, src, sizeof(bm_job));
 
+        // Do not retain borrowed string pointers if either copy fails.
+        dst->extranonce2 = nullptr;
+        dst->jobid = nullptr;
+
         // copy strings
         dst->extranonce2 = strdup(src->extranonce2);
         dst->jobid = strdup(src->jobid);
+        if (!dst->extranonce2 || !dst->jobid) {
+            free_bm_job(dst);
+            return nullptr;
+        }
 
         return dst;
     }
@@ -58,6 +73,9 @@ public:
 
     void storeJob(bm_job *next_job, uint8_t asic_job_id) {
         PThreadGuard g(m_validJobsLock);
+        if (!next_job) {
+            return;
+        }
         if (asic_job_id >= MAX_ASIC_JOBS) {
             free_bm_job(next_job);
             return;
@@ -87,5 +105,3 @@ public:
     }
 
 };
-
-

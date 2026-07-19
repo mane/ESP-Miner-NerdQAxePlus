@@ -23,6 +23,23 @@ static const char *TAG_ETH = "w5500";
 #define W5500_USE_INT 1
 #endif
 
+static esp_err_t uninstallDriverAndDeleteObjects(esp_eth_handle_t &handle, esp_eth_mac_t *mac,
+                                                 esp_eth_phy_t *phy)
+{
+    esp_err_t err = esp_eth_driver_uninstall(handle);
+    if (err != ESP_OK) {
+        // The driver can still reference MAC and PHY when uninstall fails.
+        // Keep every object alive rather than risking a use-after-free.
+        ESP_LOGE(TAG_ETH, "esp_eth_driver_uninstall failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    handle = nullptr;
+    phy->del(phy);
+    mac->del(mac);
+    return ESP_OK;
+}
+
 W5500::W5500()
 {}
 
@@ -46,27 +63,42 @@ void W5500::makeEthMacFromEfuse(uint8_t out_mac[6])
     out_mac[5] ^= 0x01;
 }
 
-void W5500::setEthMac(esp_eth_handle_t eth_handle, const char *tag)
+esp_err_t W5500::setEthMac(esp_eth_handle_t eth_handle, const char *tag)
 {
     uint8_t mac[6];
     makeEthMacFromEfuse(mac);
-    ESP_ERROR_CHECK(esp_eth_ioctl(eth_handle, ETH_CMD_S_MAC_ADDR, mac));
+    esp_err_t err = esp_eth_ioctl(eth_handle, ETH_CMD_S_MAC_ADDR, mac);
+    if (err != ESP_OK) {
+        ESP_LOGE(tag, "Failed to set ETH MAC: %s", esp_err_to_name(err));
+        return err;
+    }
 
     ESP_LOGW(tag, "ETH MAC: %02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    return ESP_OK;
 }
 
-void W5500::hwResetGpio(gpio_num_t rst)
+esp_err_t W5500::hwResetGpio(gpio_num_t rst)
 {
     gpio_config_t io = {};
     io.intr_type = GPIO_INTR_DISABLE;
     io.mode = GPIO_MODE_OUTPUT;
     io.pin_bit_mask = 1ULL << rst;
-    ESP_ERROR_CHECK(gpio_config(&io));
+    esp_err_t err = gpio_config(&io);
+    if (err != ESP_OK) {
+        return err;
+    }
 
-    gpio_set_level(rst, 0);
+    err = gpio_set_level(rst, 0);
+    if (err != ESP_OK) {
+        return err;
+    }
     vTaskDelay(pdMS_TO_TICKS(50));
-    gpio_set_level(rst, 1);
+    err = gpio_set_level(rst, 1);
+    if (err != ESP_OK) {
+        return err;
+    }
     vTaskDelay(pdMS_TO_TICKS(200));
+    return ESP_OK;
 }
 
 void W5500::onLinkUp()
@@ -151,20 +183,20 @@ void W5500::handleIpEvent(int32_t id, void *data)
 
 esp_err_t W5500::earlySpiInit()
 {
-    if (m_inited) {
+    if (m_prepared) {
         return ESP_OK;
+    }
+    if (m_ethHandle) {
+        ESP_LOGE(TAG_ETH, "Cannot retry W5500 setup after a failed driver cleanup");
+        return ESP_ERR_INVALID_STATE;
     }
 
     ESP_LOGW(TAG_ETH, "W5500::init start");
 
-    hwResetGpio(m_pinRst);
-
-    /* Create netif */
-    esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
-    m_ethNetif = esp_netif_new(&netif_cfg);
-    if (!m_ethNetif) {
-        ESP_LOGE(TAG_ETH, "esp_netif_new(ETH) failed");
-        return ESP_FAIL;
+    esp_err_t err = hwResetGpio(m_pinRst);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_ETH, "W5500 hardware reset failed: %s", esp_err_to_name(err));
+        return err;
     }
 
     /* SPI bus */
@@ -177,7 +209,7 @@ esp_err_t W5500::earlySpiInit()
 
     const spi_host_device_t spi_host = SPI2_HOST;
 
-    esp_err_t err = spi_bus_initialize(spi_host, &buscfg, SPI_DMA_CH_AUTO);
+    err = spi_bus_initialize(spi_host, &buscfg, SPI_DMA_CH_AUTO);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG_ETH, "spi_bus_initialize failed: %s", esp_err_to_name(err));
         return err;
@@ -226,35 +258,74 @@ esp_err_t W5500::earlySpiInit()
         return (err != ESP_OK) ? err : ESP_FAIL;
     }
 
-    setEthMac(m_ethHandle, TAG_ETH);
+    err = setEthMac(m_ethHandle, TAG_ETH);
+    if (err != ESP_OK) {
+        esp_err_t cleanup_err = uninstallDriverAndDeleteObjects(m_ethHandle, mac, phy);
+        return (cleanup_err == ESP_OK) ? err : cleanup_err;
+    }
+
+    /* Create netif only after the driver is ready, avoiding a leaked netif on
+       earlier SPI/MAC/PHY failures. */
+    esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
+    m_ethNetif = esp_netif_new(&netif_cfg);
+    if (!m_ethNetif) {
+        ESP_LOGE(TAG_ETH, "esp_netif_new(ETH) failed");
+        esp_err_t cleanup_err = uninstallDriverAndDeleteObjects(m_ethHandle, mac, phy);
+        return (cleanup_err == ESP_OK) ? ESP_ERR_NO_MEM : cleanup_err;
+    }
 
     esp_eth_netif_glue_handle_t glue = esp_eth_new_netif_glue(m_ethHandle);
     if (!glue) {
         ESP_LOGE(TAG_ETH, "esp_eth_new_netif_glue returned NULL");
-        esp_eth_driver_uninstall(m_ethHandle);
-        m_ethHandle = nullptr;
-        return ESP_FAIL;
+        esp_netif_destroy(m_ethNetif);
+        m_ethNetif = nullptr;
+        esp_err_t cleanup_err = uninstallDriverAndDeleteObjects(m_ethHandle, mac, phy);
+        return (cleanup_err == ESP_OK) ? ESP_FAIL : cleanup_err;
     }
 
     err = esp_netif_attach(m_ethNetif, glue);
     if (err != ESP_OK) {
         ESP_LOGE(TAG_ETH, "esp_netif_attach failed: %s", esp_err_to_name(err));
-        esp_eth_driver_uninstall(m_ethHandle);
-        m_ethHandle = nullptr;
-        return err;
+        esp_eth_del_netif_glue(glue);
+        esp_netif_destroy(m_ethNetif);
+        m_ethNetif = nullptr;
+        esp_err_t cleanup_err = uninstallDriverAndDeleteObjects(m_ethHandle, mac, phy);
+        return (cleanup_err == ESP_OK) ? err : cleanup_err;
     }
 
+    m_prepared = true;
     return ESP_OK;
 }
 
 esp_err_t W5500::init()
 {
-    ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &W5500::ethEventHandlerTrampoline, this));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &W5500::ipEventHandlerTrampoline, this));
+    if (m_inited) {
+        return ESP_OK;
+    }
 
-    esp_err_t err = esp_eth_start(m_ethHandle);
+    esp_err_t err = earlySpiInit();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &W5500::ethEventHandlerTrampoline, this);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_ETH, "ETH event handler registration failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &W5500::ipEventHandlerTrampoline, this);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_ETH, "IP event handler registration failed: %s", esp_err_to_name(err));
+        esp_event_handler_unregister(ETH_EVENT, ESP_EVENT_ANY_ID, &W5500::ethEventHandlerTrampoline);
+        return err;
+    }
+
+    err = esp_eth_start(m_ethHandle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG_ETH, "esp_eth_start failed: %s", esp_err_to_name(err));
+        esp_event_handler_unregister(IP_EVENT, IP_EVENT_ETH_GOT_IP, &W5500::ipEventHandlerTrampoline);
+        esp_event_handler_unregister(ETH_EVENT, ESP_EVENT_ANY_ID, &W5500::ethEventHandlerTrampoline);
         return err;
     }
 

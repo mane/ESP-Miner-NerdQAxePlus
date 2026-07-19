@@ -35,6 +35,8 @@ class StratumTaskV2 : public StratumTaskBase {
     StratumTransport *selectTransport() override;
 
   private:
+    void resetConnectionState();
+
     // SV2 protocol handshake steps
     bool sendSetupConnection();
     bool receiveSetupConnectionSuccess();
@@ -46,14 +48,15 @@ class StratumTaskV2 : public StratumTaskBase {
     void handleNewExtendedMiningJob(const uint8_t *payload, uint32_t len);
     void handleSetNewPrevHash(const uint8_t *payload, uint32_t len);
     void handleSetTarget(const uint8_t *payload, uint32_t len);
+    void handleSetExtranoncePrefix(const uint8_t *payload, uint32_t len);
     void handleSubmitSharesSuccess(const uint8_t *payload, uint32_t len);
     void handleSubmitSharesError(const uint8_t *payload, uint32_t len);
 
     // Job delivery to create_jobs_task pipeline
-    void enqueueStandardJob(uint32_t job_id, uint32_t version,
+    bool enqueueStandardJob(uint32_t job_id, uint32_t version,
                             const uint8_t merkle_root[32], const uint8_t prev_hash[32],
                             uint32_t ntime, uint32_t nbits, bool clean);
-    void enqueueExtendedJob(sv2_ext_job_t *job);
+    bool enqueueExtendedJob(sv2_ext_job_t *job);
 
     // Helper to load authority pubkey from NVS
     bool loadAuthorityPubkey(uint8_t out[32]);
@@ -65,4 +68,5 @@ class StratumTaskV2 : public StratumTaskBase {
 
   public:
     StratumTaskV2(StratumManager *manager, int index);
+    ~StratumTaskV2() override;
 };

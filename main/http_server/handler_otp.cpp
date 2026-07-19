@@ -78,8 +78,7 @@ esp_err_t PATCH_update_otp(httpd_req_t *req)
     // force flag is for ignoring the enabled flag but
     // it also insists on OTP validation and switches off session token check
     if (validateOTP(req, true) != ESP_OK) {
-        ESP_LOGE(TAG, "totp validation failed");
-        httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "totp missing or invalid");
+        // validateOTP() already sent the error response.
         return ESP_FAIL;
     }
 
@@ -183,15 +182,10 @@ esp_err_t POST_create_otp_session(httpd_req_t *req)
         return httpd_resp_send_err(req, HTTPD_405_METHOD_NOT_ALLOWED, "OTP disabled");
     }
 
-    // read otp from the header
-    char totp[16] = {0};
-    if (!read_header_str(req, "X-TOTP", totp, sizeof(totp))) {
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing X-TOTP header");
-    }
-
-    // validate
-    if (!otp.validate(totp)) {
-        return httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Invalid TOTP");
+    // Use the shared validator so failed session-mint attempts participate in
+    // the same brute-force protection as every other privileged endpoint.
+    if (validateOTP(req, true) != ESP_OK) {
+        return ESP_FAIL;
     }
 
     // create session token - default 24h, optionally shortened by the client

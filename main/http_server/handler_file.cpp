@@ -1,5 +1,6 @@
 #include <fcntl.h>
 #include <string.h>
+#include <strings.h>
 
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -16,6 +17,57 @@ static const char* TAG="http_file";
 #define CACHE_POLICY_NO_CACHE    "no-cache"
 #define CACHE_POLICY_CACHE       "max-age=2592000"
 #define CACHE_POLICY_IMMUTABLE   "public, max-age=31536000, immutable"
+
+static bool has_file_extension(const char *filename, const char *extension)
+{
+    if (!filename || !extension) {
+        return false;
+    }
+
+    const size_t filename_len = strlen(filename);
+    const size_t extension_len = strlen(extension);
+    return filename_len >= extension_len &&
+           strcasecmp(filename + filename_len - extension_len, extension) == 0;
+}
+
+static bool is_safe_uri_path(const char *uri)
+{
+    if (!uri || uri[0] != '/') {
+        return false;
+    }
+
+    const char *segment = uri + 1;
+    for (const char *p = segment;; ++p) {
+        const unsigned char c = (unsigned char) *p;
+
+        if (c == '\\' || (c != '\0' && (c < 0x20 || c == 0x7f))) {
+            return false;
+        }
+
+        // Reject encoded dot/path separators too. esp_http_server currently
+        // passes the raw URI, but this keeps the check safe if decoding moves
+        // to a proxy or a future server layer.
+        if (c == '%' && p[1] && p[2]) {
+            const char a = (char) (p[1] | 0x20);
+            const char b = (char) (p[2] | 0x20);
+            if ((a == '2' && (b == 'e' || b == 'f')) || (a == '5' && b == 'c')) {
+                return false;
+            }
+        }
+
+        if (c == '/' || c == '\0') {
+            const size_t segment_len = (size_t) (p - segment);
+            if ((segment_len == 1 && segment[0] == '.') ||
+                (segment_len == 2 && segment[0] == '.' && segment[1] == '.')) {
+                return false;
+            }
+            if (c == '\0') {
+                return true;
+            }
+            segment = p + 1;
+        }
+    }
+}
 
 esp_err_t init_fs(void)
 {
@@ -53,21 +105,21 @@ esp_err_t init_fs(void)
 static esp_err_t set_content_type_from_file(httpd_req_t *req, const char *filepath)
 {
     const char *type = "text/plain";
-    if (CHECK_FILE_EXTENSION(filepath, ".html")) {
+    if (has_file_extension(filepath, ".html")) {
         type = "text/html";
-    } else if (CHECK_FILE_EXTENSION(filepath, ".js")) {
+    } else if (has_file_extension(filepath, ".js")) {
         type = "application/javascript";
-    } else if (CHECK_FILE_EXTENSION(filepath, ".css")) {
+    } else if (has_file_extension(filepath, ".css")) {
         type = "text/css";
-    } else if (CHECK_FILE_EXTENSION(filepath, ".png")) {
+    } else if (has_file_extension(filepath, ".png")) {
         type = "image/png";
-    } else if (CHECK_FILE_EXTENSION(filepath, ".ico")) {
+    } else if (has_file_extension(filepath, ".ico")) {
         type = "image/x-icon";
-    } else if (CHECK_FILE_EXTENSION(filepath, ".svg")) {
+    } else if (has_file_extension(filepath, ".svg")) {
         type = "image/svg+xml";
-    } else if (CHECK_FILE_EXTENSION(filepath, ".woff2")) {
+    } else if (has_file_extension(filepath, ".woff2")) {
         type = "font/woff2";
-    } else if (CHECK_FILE_EXTENSION(filepath, ".json")) {
+    } else if (has_file_extension(filepath, ".json")) {
         type = "application/json";
     }
     return httpd_resp_set_type(req, type);
@@ -80,13 +132,13 @@ static esp_err_t set_cache_control(httpd_req_t *req, const char *filepath)
     const char *cache = CACHE_POLICY_CACHE;
 
     // don't cache the index.html
-    if (CHECK_FILE_EXTENSION(filepath, ".html")) {
+    if (has_file_extension(filepath, ".html")) {
         cache = CACHE_POLICY_NO_CACHE;
     }
 
     // Fonts etc. can be cached "forever"
-    if (CHECK_FILE_EXTENSION(filepath, ".woff2") ||
-        CHECK_FILE_EXTENSION(filepath, ".png") ) {
+    if (has_file_extension(filepath, ".woff2") ||
+        has_file_extension(filepath, ".png") ) {
         cache = CACHE_POLICY_IMMUTABLE;
     }
 
@@ -148,10 +200,17 @@ esp_err_t rest_common_get_handler(httpd_req_t *req)
 
     // Strip query string from URI (e.g. "?v=abc123") ---
     char uri_clean[FILE_PATH_MAX];
-    strlcpy(uri_clean, req->uri, sizeof(uri_clean));
+    if (strlcpy(uri_clean, req->uri, sizeof(uri_clean)) >= sizeof(uri_clean)) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "URI too long");
+    }
     char *qmark = strchr(uri_clean, '?');
     if (qmark) {
         *qmark = '\0';  // terminate before '?'
+    }
+
+    if (!is_safe_uri_path(uri_clean)) {
+        ESP_LOGW(TAG, "Rejected unsafe file path: %s", uri_clean);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid path");
     }
 
     size_t uri_len = strlen(uri_clean);

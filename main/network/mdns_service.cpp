@@ -19,12 +19,22 @@ void mdns_service_start(const char *hostname, Board *board)
     }
 
     const char *host = (hostname && hostname[0]) ? hostname : "nerdminer";
-    mdns_hostname_set(host);
-    mdns_instance_name_set(host);
+    err = mdns_hostname_set(host);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "mdns_hostname_set failed: %s", esp_err_to_name(err));
+        mdns_free();
+        return;
+    }
+    err = mdns_instance_name_set(host);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "mdns_instance_name_set failed: %s", esp_err_to_name(err));
+        mdns_free();
+        return;
+    }
 
-    char board_ver[8];
+    char board_ver[12];
     snprintf(board_ver, sizeof(board_ver), "%d", board ? board->getVersion() : 0);
-    char asic_count[8];
+    char asic_count[12];
     snprintf(asic_count, sizeof(asic_count), "%d", board ? board->getAsicCount() : 0);
     const esp_app_desc_t *app = esp_app_get_description();
 
@@ -39,6 +49,7 @@ void mdns_service_start(const char *hostname, Board *board)
     err = mdns_service_add(host, "_http", "_tcp", 80, txt, sizeof(txt) / sizeof(txt[0]));
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "mdns_service_add failed: %s", esp_err_to_name(err));
+        mdns_free();
         return;
     }
 

@@ -32,7 +32,7 @@ void free_bm_job(bm_job *job);
 
 char *construct_coinbase_tx(const char *coinbase_1, const char *coinbase_2, const char *extranonce, const char *extranonce_2);
 
-void calculate_merkle_root_hash(const char *coinbase_tx, const uint8_t merkle_branches[][32], const int num_merkle_branches,
+bool calculate_merkle_root_hash(const char *coinbase_tx, const uint8_t merkle_branches[][32], int num_merkle_branches,
                                 char merkle_root_hash[65]);
 
 void construct_bm_job(mining_notify *params, const char *merkle_root, const uint32_t version_mask, bm_job *new_job);
@@ -40,4 +40,3 @@ void construct_bm_job(mining_notify *params, const char *merkle_root, const uint
 double test_nonce_value(const bm_job *job, const uint32_t nonce, const uint32_t rolled_version);
 
 char *extranonce_2_generate(uint32_t extranonce_2, uint32_t length);
-

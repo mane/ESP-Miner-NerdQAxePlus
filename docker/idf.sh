@@ -1,6 +1,24 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-rpath="$( dirname "$( readlink -f "$0" )" )"
-cd $rpath
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_dir="$(cd -- "$script_dir/.." && pwd -P)"
 
-docker run --rm -v /dev:/dev --privileged -e BOARD="${BOARD:-NERDQAXEPLUS}" -v "$rpath/..":/home/builder/project esp-idf-builder idf.py $@
+version_tag="${VERSION_TAG:-$(git -C "$repo_dir" describe --tags --abbrev=0 --dirty --always 2>/dev/null || true)}"
+commit_hash="${COMMIT_HASH:-$(git -C "$repo_dir" rev-parse --short HEAD 2>/dev/null || true)}"
+version_tag="${version_tag:-local}"
+commit_hash="${commit_hash:-local}"
+
+docker_options=(run --rm)
+if [[ -t 0 && -t 1 ]]; then
+    docker_options+=(-it)
+fi
+
+exec docker "${docker_options[@]}" \
+    -v /dev:/dev \
+    --privileged \
+    -e BOARD="${BOARD:-NERDQAXEPLUS}" \
+    -e VERSION_TAG="$version_tag" \
+    -e COMMIT_HASH="$commit_hash" \
+    -v "$repo_dir":/home/builder/project \
+    esp-idf-builder idf.py "$@"

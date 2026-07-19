@@ -25,8 +25,6 @@ typedef struct
 
 #define MESSAGE_QUEUE_SIZE (128)
 
-#define CHECK_FILE_EXTENSION(filename, ext) (strcasecmp(&filename[strlen(filename) - strlen(ext)], ext) == 0)
-
 #define max(a,b) ((a)>(b))?(a):(b)
 #define min(a,b) ((a)<(b))?(a):(b)
 

@@ -896,6 +896,8 @@ void DisplayDriver::updateCurrentSettings(int pool)
 {
     PThreadGuard lock(m_lvglMutex);
     char strData[20];
+    char poolHost[128]{};
+    int poolPort = 0;
     if (m_ui->ui_SettingsScreen == NULL || !STRATUM_MANAGER)
         return;
 
@@ -903,9 +905,9 @@ void DisplayDriver::updateCurrentSettings(int pool)
 
     if (STRATUM_MANAGER->isDualPool()) {
         auto *manager = static_cast<StratumManagerDualPool*>(STRATUM_MANAGER);
-        snprintf(strData, sizeof(strData), "%s", manager->getPoolHost(pool));
-        lv_label_set_text(m_ui->ui_lbPoolSet, strData); // Update label
-        snprintf(strData, sizeof(strData), "%d", manager->getPoolPort(pool));
+        manager->copyPoolEndpoint(pool, poolHost, sizeof(poolHost), &poolPort);
+        lv_label_set_text(m_ui->ui_lbPoolSet, poolHost[0] ? poolHost : "-"); // Update label
+        snprintf(strData, sizeof(strData), "%d", poolPort);
         lv_label_set_text(m_ui->ui_lbPortSet, strData); // Update label
         snprintf(strData, sizeof(strData), "%d", pool + 1);
         lv_label_set_text(m_ui->ui_lbPoolNr, strData);
@@ -913,8 +915,9 @@ void DisplayDriver::updateCurrentSettings(int pool)
 
     if (STRATUM_MANAGER->isFallback()) {
         auto *manager = static_cast<StratumManagerFallback*>(STRATUM_MANAGER);
-        lv_label_set_text(m_ui->ui_lbPoolSet, manager->getCurrentPoolHost()); // Update label
-        snprintf(strData, sizeof(strData), "%d", manager->getCurrentPoolPort());
+        manager->copyCurrentPoolEndpoint(poolHost, sizeof(poolHost), &poolPort);
+        lv_label_set_text(m_ui->ui_lbPoolSet, poolHost[0] ? poolHost : "-"); // Update label
+        snprintf(strData, sizeof(strData), "%d", poolPort);
         lv_label_set_text(m_ui->ui_lbPortSet, strData); // Update label
     }
 

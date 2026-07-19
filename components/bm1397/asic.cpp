@@ -23,6 +23,7 @@ const static char* TAG = "asic";
 
 Asic::Asic() {
     m_current_frequency = 56.25;
+    m_actual_current_frequency = m_current_frequency;
     m_asicDifficulty = 0xffffffff;
 }
 
@@ -92,6 +93,10 @@ void Asic::sendReadAddress(void)
 // Function to set the hash frequency
 // gives the same PLL settings as the S21 dumps
 bool Asic::sendHashFrequency(float target_freq) {
+    if (!isfinite(target_freq) || target_freq <= 0.0f) {
+        ESP_LOGE(TAG, "Invalid target frequency: %.2fMHz", target_freq);
+        return false;
+    }
     float min_diff = 2.0;
     uint8_t freqbuf[6] = {0x00, 0x08, 0x40, 0xA0, 0x02, 0x41};
     int postdiv_min = 255;
@@ -240,6 +245,11 @@ void Asic::readCounter(uint8_t reg) {
 
 // Function to perform frequency transition up or down
 bool Asic::doFrequencyTransition(float target_frequency) {
+    if (!isfinite(target_frequency) || target_frequency <= 0.0f) {
+        ESP_LOGE(TAG, "Invalid frequency transition target: %.2fMHz", target_frequency);
+        return false;
+    }
+
     float step = 6.25;
     float current = m_current_frequency;
     float target = target_frequency;
@@ -275,10 +285,13 @@ bool Asic::doFrequencyTransition(float target_frequency) {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
-    // Set the exact target frequency to finalize
-    if (!sendHashFrequency(target)) {
-        printf("ERROR: Failed to set frequency to %.2f MHz\n", target);
-        return false;
+    // The loop already sends the exact target. Only send here when no ramp step
+    // was needed (for example after alignment rounded directly onto target).
+    if (fabs(current - target) > 0.001f) {
+        if (!sendHashFrequency(target)) {
+            printf("ERROR: Failed to set frequency to %.2f MHz\n", target);
+            return false;
+        }
     }
     return true;
 }
@@ -290,9 +303,15 @@ int Asic::count_asics() {
 
     uint8_t buf[11];
     int chip_counter = 0;
-    while (SERIAL_rx(buf, sizeof(buf), 1000) > 0) {
+    int received = 0;
+    while ((received = SERIAL_rx(buf, sizeof(buf), 1000)) > 0) {
+        if (received != static_cast<int>(sizeof(buf))) {
+            ESP_LOGE(TAG, "Incomplete ASIC address response: %d/%u", received, (unsigned)sizeof(buf));
+            SERIAL_clear_buffer();
+            break;
+        }
 //        ESP_LOG_BUFFER_HEX(TAG, buf, sizeof(buf));
-        if (!strncmp((char *) getChipId(), (char *) buf, 6)) {
+        if (memcmp(getChipId(), buf, 6) == 0) {
             chip_counter++;
             ESP_LOGI(TAG, "found asic #%d", chip_counter);
         } else {
@@ -379,6 +398,13 @@ bool Asic::receiveWork(asic_result_t *result)
         return false;
     } else if (received == 0) {
         // Didn't find a solution, restart and try again
+        return false;
+    }
+
+    if (received != static_cast<int>(sizeof(*result))) {
+        ESP_LOGE(TAG, "Incomplete serial RX frame: %d/%u", received, (unsigned)sizeof(*result));
+        ESP_LOG_BUFFER_HEX(TAG, (uint8_t*) result, received);
+        SERIAL_clear_buffer();
         return false;
     }
 

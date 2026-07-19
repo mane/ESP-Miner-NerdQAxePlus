@@ -73,8 +73,11 @@ void PowerManagementTask::checkCoreVoltageChanged()
 
     if (core_voltage != last_core_voltage) {
         ESP_LOGI(TAG, "setting new vcore voltage to %umV", core_voltage);
-        m_board->setVoltage((float) core_voltage / 1000.0);
-        last_core_voltage = core_voltage;
+        if (m_board->setVoltage((float) core_voltage / 1000.0)) {
+            last_core_voltage = core_voltage;
+        } else {
+            ESP_LOGE(TAG, "failed to set vcore voltage to %umV; will retry", core_voltage);
+        }
     }
 }
 
@@ -87,9 +90,10 @@ void PowerManagementTask::checkAsicFrequencyChanged()
     if (asic_frequency != last_asic_frequency) {
         ESP_LOGI(TAG, "setting new asic frequency to %uMHz", asic_frequency);
         if (!m_board->setAsicFrequency((float) asic_frequency)) {
-            ESP_LOGE(TAG, "pll setting not found for %uMHz", asic_frequency);
+            ESP_LOGE(TAG, "pll setting not found for %uMHz; will retry", asic_frequency);
+        } else {
+            last_asic_frequency = asic_frequency;
         }
-        last_asic_frequency = asic_frequency;
     }
 }
 
@@ -117,7 +121,16 @@ void PowerManagementTask::logChipTemps()
 
     // Iterate through each ASIC and append its count to the log message
     for (int i = 0; i < m_board->getAsicCount(); i++) {
-        offset += snprintf(m_logBuffer + offset, sizeof(m_logBuffer) - offset, "%.2f°C / ", m_board->getChipTemp(i));
+        size_t remaining = sizeof(m_logBuffer) - offset;
+        int written = snprintf(m_logBuffer + offset, remaining, "%.2f°C / ", m_board->getChipTemp(i));
+        if (written < 0) {
+            return;
+        }
+        if (static_cast<size_t>(written) >= remaining) {
+            offset = sizeof(m_logBuffer) - 1;
+            break;
+        }
+        offset += static_cast<size_t>(written);
     }
     if (offset >= 2) {
         m_logBuffer[offset - 2] = 0; // remove trailing slash

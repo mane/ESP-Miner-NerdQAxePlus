@@ -164,15 +164,19 @@ void StratumTaskBase::task()
             vTaskSuspend(NULL);
         }
 
-        // gets a guaranteed consistent copy of the config
-        m_manager->copyConfigInto(m_index, m_config);
+        // Keep config replacement atomic with snapshots taken by submitters.
+        {
+            PThreadGuard config_lock(m_configMutex);
+            m_manager->copyConfigInto(m_index, m_config);
+        }
 
         m_reconnect = false;
 
         // do we have a stratum host configured?
         // we do it here because we could reload the config after
         // it was updated on the UI and settings
-        if (!strlen(m_config->getHost())) {
+        const char *configured_host = m_config->getHost();
+        if (!configured_host || configured_host[0] == '\0') {
             vTaskDelay(pdMS_TO_TICKS(10000));
             continue;
         }
@@ -222,10 +226,15 @@ void StratumTaskBase::task()
 
         // shutdown and reconnect
         ESP_LOGIE(m_reconnect, m_tag, "Shutdown socket ...");
-        m_transport->close();
+        {
+            PThreadGuard io_lock(m_ioMutex);
+            m_isConnected = false;
+            if (m_transport) {
+                m_transport->close();
+            }
+        }
 
         disconnectedCallback();
-        m_isConnected = false;
 
         // skip reconnect delay
         if (m_reconnect) {
@@ -276,6 +285,9 @@ void StratumTaskV1::protocolLoop()
     // mining.mining.extranonce.subscribe - ID 5
     if (m_config->isEnonceSubscribeEnabled()) {
         success = success && m_stratumAPI.entranonceSubscribe(m_transport);
+        m_lastSetupMessageId = STRATUM_ID_EXTRANONCE_SUBSCRIBE;
+    } else {
+        m_lastSetupMessageId = STRATUM_ID_SUGGEST_DIFFICULTY;
     }
 
     if (!success) {
@@ -347,7 +359,29 @@ void StratumTaskV1::protocolLoop()
 void StratumTaskV1::submitShare(const char *jobid, const char *extranonce_2, const uint32_t ntime, const uint32_t nonce,
                               const uint32_t version_rolled, const uint32_t version_base)
 {
+    char *username = nullptr;
+    {
+        PThreadGuard config_lock(m_configMutex);
+        const char *configured_user = m_config ? m_config->getUser() : nullptr;
+        username = configured_user ? strdup(configured_user) : nullptr;
+    }
+    if (!username) {
+        ESP_LOGE(m_tag, "Share submit failed: username unavailable");
+        return;
+    }
+    MemoryGuard username_guard(username);
+
+    PThreadGuard io_lock(m_ioMutex);
+    if (!m_isConnected || !m_transport) {
+        ESP_LOGE(m_tag, "Share submit skipped: pool disconnected");
+        return;
+    }
+
     // V1 mining.submit expects version rolling bits (delta), not full version
     uint32_t version_delta = version_rolled ^ version_base;
-    m_stratumAPI.submitShare(m_transport, m_config->getUser(), jobid, extranonce_2, ntime, nonce, version_delta);
+    if (!m_stratumAPI.submitShare(m_transport, username, jobid, extranonce_2,
+                                  ntime, nonce, version_delta)) {
+        ESP_LOGE(m_tag, "Share submit failed; reconnecting");
+        triggerReconnect();
+    }
 }

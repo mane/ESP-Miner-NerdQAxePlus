@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <new>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -63,19 +64,24 @@ void Board::loadSettings()
 }
 
 bool Board::initBoard() {
-    m_chipTemps = new float[m_asicCount]();
+    delete[] m_chipTemps;
+    m_chipTemps = new (std::nothrow) float[m_asicCount]();
+    if (!m_chipTemps) {
+        ESP_LOGE(TAG, "Failed to allocate ASIC temperature state");
+        return false;
+    }
     return true;
 }
 
 void Board::setChipTemp(int nr, float temp) {
-    if (nr < 0 || nr >= m_asicCount) {
+    if (!m_chipTemps || nr < 0 || nr >= m_asicCount) {
         return;
     }
     m_chipTemps[nr] = temp;
 }
 
 float Board::getChipTemp(int nr) {
-    if (nr < 0 || nr >= m_asicCount) {
+    if (!m_chipTemps || nr < 0 || nr >= m_asicCount) {
         return 0.0f;
     }
     return m_chipTemps[nr];
@@ -86,6 +92,9 @@ void Board::requestChipTemps() {
 }
 
 float Board::getMaxChipTemp() {
+    if (!m_chipTemps) {
+        return 0.0f;
+    }
     float maxTemp = 0.0f;
     for (int i=0;i<m_asicCount;i++) {
         maxTemp = std::max(maxTemp, m_chipTemps[i]);

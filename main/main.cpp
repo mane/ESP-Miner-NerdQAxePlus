@@ -237,10 +237,13 @@ extern "C" void app_main(void)
     }
 
     board->loadSettings();
-    board->initBoard();
-
-
+    const bool boardInitOk = board->initBoard();
     SYSTEM_MODULE.setBoard(board);
+    if (!boardInitOk) {
+        ESP_LOGE(TAG, "Board initialization failed; keeping ASIC rails disabled");
+        board->shutdown();
+        SYSTEM_MODULE.setBoardError(Board::Error::BOARD_INIT_FAULT, 0);
+    }
 
     size_t total_psram = esp_psram_get_size();
     ESP_LOGI(TAG, "PSRAM found with %dMB", total_psram / (1024 * 1024));
@@ -249,12 +252,14 @@ extern "C" void app_main(void)
 
     uint64_t best_diff = Config::getBestDiff();
     bool should_self_test = Config::isSelfTestEnabled();
-    if (should_self_test && !best_diff) {
+    if (boardInitOk && should_self_test && !best_diff) {
         board->selfTest();
         vTaskDelay(pdMS_TO_TICKS(60 * 60 * 1000));
     }
 
-    const bool canSlave = board->isCanSlave();
+    // A board-level failure always falls back to master/diagnostic mode so the
+    // HTTP recovery surface remains reachable even if the CAN DIP selects slave.
+    const bool canSlave = boardInitOk && board->isCanSlave();
 
     if (canSlave) {
         // ----------------------------------------------------------------
@@ -268,23 +273,32 @@ extern "C" void app_main(void)
         SYSTEM_MODULE.initDisplay();
 
         xTaskCreatePSRAM(SYSTEM_MODULE.taskWrapper, "SYSTEM_task", 4096, &SYSTEM_MODULE, 3, NULL);
-        xTaskCreatePSRAM(POWER_MANAGEMENT_MODULE.taskWrapper, "power mangement", 8192, (void *) &POWER_MANAGEMENT_MODULE, 10, NULL);
+        if (boardInitOk) {
+            xTaskCreatePSRAM(POWER_MANAGEMENT_MODULE.taskWrapper, "power mangement", 8192, (void *) &POWER_MANAGEMENT_MODULE, 10, NULL);
+        }
         SYSTEM_MODULE.setStartupDone();
 
         can_init(board->getCanTxPin(), board->getCanRxPin());
 
+        bool asicInitOk = false;
         POWER_MANAGEMENT_MODULE.lock();
-        if (!board->initAsics()) {
-            ESP_LOGE(TAG, "error initializing board %s", board->getDeviceModel());
-        }
+        asicInitOk = board->initAsics();
         POWER_MANAGEMENT_MODULE.unlock();
+        if (!asicInitOk) {
+            ESP_LOGE(TAG, "error initializing board %s", board->getDeviceModel());
+            SYSTEM_MODULE.setBoardError(Board::Error::ASIC_INIT_FAULT, 0);
+        }
 
-        xTaskCreatePSRAM(can_slave_task, "can slave", 4096, NULL, 10, NULL);
-        xTaskCreatePSRAM(can_slave_result_task, "can result", 4096, NULL, 10, NULL);
-        xTaskCreatePSRAM(can_slave_telemetry_task, "can telem", 4096, NULL, 5, NULL);
+        if (asicInitOk) {
+            xTaskCreatePSRAM(can_slave_task, "can slave", 4096, NULL, 10, NULL);
+            xTaskCreatePSRAM(can_slave_result_task, "can result", 4096, NULL, 10, NULL);
+            xTaskCreatePSRAM(can_slave_telemetry_task, "can telem", 4096, NULL, 5, NULL);
 
-        if (board->hasHashrateCounter()) {
-            HASHRATE_MONITOR.start(board, board->getAsics());
+            if (board->hasHashrateCounter()) {
+                HASHRATE_MONITOR.start(board, board->getAsics());
+            }
+        } else {
+            ESP_LOGE(TAG, "CAN mining tasks disabled because ASIC initialization failed");
         }
 
     } else {
@@ -309,10 +323,18 @@ extern "C" void app_main(void)
         // beforehand — otherwise portalScreen() is never called and the display stays
         // on a blank (white) screen.
         xTaskCreatePSRAM(SYSTEM_MODULE.taskWrapper, "SYSTEM_task", 4096, &SYSTEM_MODULE, 3, NULL);
-        xTaskCreatePSRAM(POWER_MANAGEMENT_MODULE.taskWrapper, "power mangement", 8192, (void *) &POWER_MANAGEMENT_MODULE, 10, NULL);
+        if (boardInitOk) {
+            xTaskCreatePSRAM(POWER_MANAGEMENT_MODULE.taskWrapper, "power mangement", 8192, (void *) &POWER_MANAGEMENT_MODULE, 10, NULL);
+        }
         SYSTEM_MODULE.setStartupDone();
 
         setup_network(board->hasEthernet());
+
+        // OTA writes SPI flash, which disables cache, so its stack must stay in
+        // internal RAM. Start the worker independently of mining credentials:
+        // the recovery/configuration UI exposes the endpoint even before a
+        // stratum username exists.
+        xTaskCreate(FACTORY_OTA_UPDATER.taskWrapper, "ota updater", 8192, (void *) &FACTORY_OTA_UPDATER, 1, NULL);
 
         // when a username is configured we will continue with startup and start mining
         char *username = Config::cfgGetStrAlloc(NVS_CONFIG_STRATUM_USER, "");
@@ -337,29 +359,39 @@ extern "C" void app_main(void)
                 discordAlerter.sendWatchdogAlert();
             }
 
-            // and continue with initialization
-            POWER_MANAGEMENT_MODULE.lock();
-            if (!board->initAsics()) {
-                ESP_LOGE(TAG, "error initializing board %s", board->getDeviceModel());
+            bool asicInitOk = false;
+            if (boardInitOk) {
+                POWER_MANAGEMENT_MODULE.lock();
+                asicInitOk = board->initAsics();
+                POWER_MANAGEMENT_MODULE.unlock();
+                if (!asicInitOk) {
+                    ESP_LOGE(TAG, "error initializing board %s", board->getDeviceModel());
+                    SYSTEM_MODULE.setBoardError(Board::Error::ASIC_INIT_FAULT, 0);
+                }
+            } else {
+                ESP_LOGE(TAG, "Skipping ASIC initialization because board initialization failed");
             }
-            POWER_MANAGEMENT_MODULE.unlock();
 
-            xTaskCreatePSRAM(create_jobs_task, "stratum miner", 8192, NULL, 10, NULL);
-            xTaskCreatePSRAM(ASIC_result_task, "asic result", 8192, NULL, 15, NULL);
             xTaskCreatePSRAM(influx_task, "influx", 8192, NULL, 1, NULL);
             xTaskCreatePSRAM(APIs_FETCHER.taskWrapper, "apis ticker", 8192, (void *) &APIs_FETCHER, 5, NULL);
             xTaskCreatePSRAM(wifi_monitor_task, "wifi monitor", 4096, NULL, 1, NULL);
-            if (Config::isCanEnabled()) {
-                can_init(board->getCanTxPin(), board->getCanRxPin());
-                xTaskCreate(can_master_task, "can master", 4096, NULL, 5, NULL);
-            }
-            // OTA writes SPI flash which disables cache — must NOT run on PSRAM stack
-            xTaskCreate(FACTORY_OTA_UPDATER.taskWrapper, "ota updater", 8192, (void *) &FACTORY_OTA_UPDATER, 1, NULL);
-            xTaskCreatePSRAM(StratumManager::taskWrapper, "stratum manager", 8192, (void *) STRATUM_MANAGER, 5, NULL);
 
-            if (board->hasHashrateCounter()) {
-                HASHRATE_MONITOR.start(board, board->getAsics());
+            if (asicInitOk) {
+                xTaskCreatePSRAM(create_jobs_task, "stratum miner", 8192, NULL, 10, NULL);
+                xTaskCreatePSRAM(ASIC_result_task, "asic result", 8192, NULL, 15, NULL);
+                if (Config::isCanEnabled()) {
+                    can_init(board->getCanTxPin(), board->getCanRxPin());
+                    xTaskCreate(can_master_task, "can master", 4096, NULL, 5, NULL);
+                }
+                xTaskCreatePSRAM(StratumManager::taskWrapper, "stratum manager", 8192, (void *) STRATUM_MANAGER, 5, NULL);
+
+                if (board->hasHashrateCounter()) {
+                    HASHRATE_MONITOR.start(board, board->getAsics());
+                }
+            } else {
+                ESP_LOGE(TAG, "Mining tasks disabled; network and HTTP remain available for recovery");
             }
+
         }
     }
 

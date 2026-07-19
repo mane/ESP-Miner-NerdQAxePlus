@@ -170,7 +170,6 @@ PingResult PingTask::perform_ping(const char *ip_str, const char *hostname_str)
         result.avg_rtt_ms = round_avg;
         result.min_rtt_ms = stats.min_rtt;
         result.max_rtt_ms = stats.max_rtt;
-        m_last_ping_rtt_ms = result.avg_rtt_ms;
     }
 
     return result;
@@ -193,43 +192,59 @@ void PingTask::ping_task()
 
     StratumConfig* cfg = new StratumConfig(m_pool);
     while (true) {
+        if (POWER_MANAGEMENT_MODULE.isShutdown()) {
+            ESP_LOGW(m_tag, "suspended");
+            // reset metrics in shutdown
+            reset();
+            vTaskSuspend(NULL);
+        }
+
+        // Never hold the ping-history mutex while calling StratumManager. The
+        // settings path owns the manager mutex before resetting ping history,
+        // so nesting in the opposite order here would create an ABBA deadlock.
+        if (!m_manager || !m_manager->isConnected(m_pool)) {
+            vTaskDelay(pdMS_TO_TICKS(10000));
+            continue;
+        }
+
+        // get a guaranteed consistent copy of the config
+        m_manager->copyConfigInto(m_pool, cfg);
+        const char *hostname = cfg->getHost();
+        const char *resolved_ip = m_manager->getResolvedIpForPool(m_pool);
+
+        if (!hostname || !resolved_ip) {
+            ESP_LOGE(m_tag, "No resolved IP for current hostname");
+            vTaskDelay(pdMS_TO_TICKS(PING_DELAY * 1000));
+            continue;
+        }
+
+        // The task owns cfg, but the resolved-IP buffer belongs to the stratum
+        // task. Snapshot both before the blocking ping session.
+        char hostname_snapshot[256]{};
+        char ip_snapshot[INET_ADDRSTRLEN]{};
+        strncpy(hostname_snapshot, hostname, sizeof(hostname_snapshot) - 1);
+        strncpy(ip_snapshot, resolved_ip, sizeof(ip_snapshot) - 1);
+
+        PingResult result = perform_ping(ip_snapshot, hostname_snapshot);
+
+        ESP_LOGI(m_tag, "--- %s ping statistics ---", hostname_snapshot);
+        double loss_current = 100.0 * (PING_COUNT - result.replies) / (double) PING_COUNT;
+        ESP_LOGI(m_tag, "%u packets transmitted, %u packets received, %.1f%% packet loss", PING_COUNT, result.replies,
+                loss_current);
+        if (result.success) {
+            ESP_LOGI(m_tag, "round-trip min/avg/max = %.2f/%.2f/%.2f ms", result.min_rtt_ms, result.avg_rtt_ms, result.max_rtt_ms);
+        }
+
+        double recent_loss = 0.0;
         {
-            if (POWER_MANAGEMENT_MODULE.isShutdown()) {
-                ESP_LOGW(m_tag, "suspended");
-                // reset metrics in shutdown
-                reset();
-                vTaskSuspend(NULL);
-            }
-
-            PThreadGuard g(m_mutex);
-            if (!m_manager || !m_manager->isConnected(m_pool)) { // helper public machen
-                vTaskDelay(pdMS_TO_TICKS(10000));
-                continue;
-            }
-
-            // get a guaranteed consistent copy of the config
-            m_manager->copyConfigInto(m_pool, cfg);
-            const char *hostname = cfg->getHost();
-            const char *ip_str = m_manager->getResolvedIpForPool(m_pool);
-
-            if (!hostname || !ip_str) {
-                ESP_LOGE(m_tag, "No resolved IP for current hostname");
-                vTaskDelay(pdMS_TO_TICKS(PING_DELAY * 1000));
-                continue;
-            }
-
-            PingResult result = perform_ping(ip_str, hostname);
-
-            ESP_LOGI(m_tag, "--- %s ping statistics ---", hostname);
-            double loss_current = 100.0 * (PING_COUNT - result.replies) / (double) PING_COUNT;
-            ESP_LOGI(m_tag, "%u packets transmitted, %u packets received, %.1f%% packet loss", PING_COUNT, result.replies,
-                    loss_current);
+            PThreadGuard history_lock(m_mutex);
             if (result.success) {
-                ESP_LOGI(m_tag, "round-trip min/avg/max = %.2f/%.2f/%.2f ms", result.min_rtt_ms, result.avg_rtt_ms, result.max_rtt_ms);
+                m_last_ping_rtt_ms = result.avg_rtt_ms;
             }
             record_ping_result(PING_COUNT, result.replies);
-            ESP_LOGI(m_tag, "Recent %d-min packet loss: %.1f%%", HISTORY_WINDOW_SEC / 60, 100.0 * get_recent_packet_loss());
+            recent_loss = get_recent_packet_loss();
         }
+        ESP_LOGI(m_tag, "Recent %d-min packet loss: %.1f%%", HISTORY_WINDOW_SEC / 60, 100.0 * recent_loss);
         vTaskDelay(pdMS_TO_TICKS(PING_DELAY * 1000));
     }
 }
@@ -237,7 +252,9 @@ void PingTask::ping_task()
 void PingTask::reset() {
     PThreadGuard g(m_mutex);
 
-    memset(m_ping_history, 0, HISTORY_SIZE * sizeof(PingHistory));
+    if (m_ping_history) {
+        memset(m_ping_history, 0, HISTORY_SIZE * sizeof(PingHistory));
+    }
     m_history_index = 0;
     m_history_count = 0;
     m_last_ping_rtt_ms = 0;
@@ -246,11 +263,13 @@ void PingTask::reset() {
 // Provide latest average RTT to other modules
 double PingTask::get_last_ping_rtt()
 {
+    PThreadGuard g(m_mutex);
     return m_last_ping_rtt_ms;
 }
 
 // Provide recent few minutes packet loss to other modules
 double PingTask::get_recent_ping_loss()
 {
+    PThreadGuard g(m_mutex);
     return get_recent_packet_loss();
 }

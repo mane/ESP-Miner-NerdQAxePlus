@@ -58,9 +58,6 @@ class StratumManagerDualPool : public StratumManager {
         return m_poolDiffErr[i];
     }
 
-    virtual const char *getPoolHost(int pool);
-    virtual int getPoolPort(int pool);
-
     virtual uint32_t selectAsicDiff(int pool, uint32_t poolDiff);
 
     virtual int getNextActivePool();
@@ -114,7 +111,11 @@ class StratumManagerDualPool : public StratumManager {
     }
 
     virtual int getPoolErrors() {
-        return m_stratumTasks[0]->m_poolErrors + m_stratumTasks[1]->m_poolErrors;
+        int errors = 0;
+        for (int i = 0; i < 2; ++i) {
+            if (m_stratumTasks[i]) errors += m_stratumTasks[i]->m_poolErrors;
+        }
+        return errors;
     }
 
     virtual int getCompatPingPoolIndex() {

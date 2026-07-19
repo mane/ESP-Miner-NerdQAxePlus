@@ -3,7 +3,7 @@ import { Injectable } from '@angular/core';
 import { Observable, EMPTY } from 'rxjs';
 import { map, switchMap, expand, scan, takeWhile, last } from 'rxjs/operators';
 
-interface GithubAsset {
+export interface GithubAsset {
   id: number;
   name: string;
   browser_download_url: string;
@@ -62,15 +62,17 @@ export class GithubUpdateService {
     includePrereleases: boolean,
     targetCount = 10,
     maxPages = 10,
-    perPage = 50
+    perPage = 50,
+    releaseFilter: (release: GithubRelease) => boolean = () => true
   ): Observable<GithubRelease[]> {
     const isStable = (r: GithubRelease) =>
-      !r.prerelease && !r.tag_name.includes('-rc');
+      !r.prerelease && !/-rc/i.test(r.tag_name);
 
     const isPre = (r: GithubRelease) =>
-      r.prerelease || r.tag_name.includes('-rc');
+      r.prerelease || /-rc/i.test(r.tag_name);
 
-    const matchesType = includePrereleases ? isPre : isStable;
+    const matchesType = (release: GithubRelease) =>
+      (includePrereleases ? isPre(release) : isStable(release)) && releaseFilter(release);
 
     // start with page 1
     return this.fetchReleasePage(1, perPage).pipe(
@@ -107,46 +109,133 @@ export class GithubUpdateService {
    * Es werden mehrere Seiten geladen, bis genug Releases vom gewünschten Typ
    * gefunden wurden oder keine Releases mehr da sind.
    */
-  public getReleases(includePrereleases = false): Observable<GithubRelease[]> {
+  public getReleases(
+    includePrereleases = false,
+    releaseFilter: (release: GithubRelease) => boolean = () => true
+  ): Observable<GithubRelease[]> {
     const latest$ = this.httpClient.get<GithubRelease>(
       `${this.baseReleasesUrl}/latest`
     );
 
-    const selected$ = this.loadReleasesOfType(includePrereleases, 10, 10, 50);
+    const selected$ = this.loadReleasesOfType(
+      includePrereleases,
+      10,
+      10,
+      50,
+      releaseFilter
+    );
 
     return selected$.pipe(
       switchMap((releases: GithubRelease[]) =>
         latest$.pipe(
-          map((latest) =>
-            releases.map(r => ({
+          map((latest) => {
+            // GitHub's /latest endpoint is repository-wide. On the LTS device
+            // the newest matching release may therefore differ from it.
+            const latestForChannel = releases.some(r => r.id === latest.id)
+              ? latest.id
+              : releases[0]?.id;
+
+            return releases.map(r => ({
               ...r,
               body: r.body || '',
-              isLatest: !includePrereleases && r.id === latest.id
-            }))
-          )
+              isLatest: !includePrereleases && r.id === latestForChannel
+            }));
+          })
         )
       )
     );
   }
 
   /**
-   * Compare two semantic versions
+   * Compare firmware versions, including the fork/LTS suffixes used by this
+   * repository (for example `v1.1.1-mane.6-nqa-lts2`).
+   *
+   * A plain numeric split is not sufficient here: it would consider `lts2`
+   * and `lts3` equal and prevent the UI from advertising an LTS update.
    * Returns: 1 if v1 > v2, -1 if v1 < v2, 0 if equal
    */
   public compareVersions(v1: string, v2: string): number {
-    // Remove 'v' prefix if present
-    const cleanV1 = v1.replace(/^v/, '');
-    const cleanV2 = v2.replace(/^v/, '');
+    const parsed1 = this.parseVersion(v1);
+    const parsed2 = this.parseVersion(v2);
 
-    const parts1 = cleanV1.split('.').map(p => parseInt(p) || 0);
-    const parts2 = cleanV2.split('.').map(p => parseInt(p) || 0);
+    const coreLength = Math.max(parsed1.core.length, parsed2.core.length);
+    for (let i = 0; i < coreLength; i++) {
+      const part1 = parsed1.core[i] ?? 0;
+      const part2 = parsed2.core[i] ?? 0;
+      if (part1 !== part2) {
+        return part1 > part2 ? 1 : -1;
+      }
+    }
 
-    for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
-      const p1 = parts1[i] || 0;
-      const p2 = parts2[i] || 0;
+    const preReleaseNames = new Set(['alpha', 'beta', 'pre', 'preview', 'rc', 'dev']);
+    const preReleaseIndex1 = parsed1.suffix.findIndex(
+      part => typeof part === 'string' && preReleaseNames.has(part)
+    );
+    const preReleaseIndex2 = parsed2.suffix.findIndex(
+      part => typeof part === 'string' && preReleaseNames.has(part)
+    );
 
-      if (p1 > p2) return 1;
-      if (p1 < p2) return -1;
+    const channel1 = preReleaseIndex1 < 0
+      ? parsed1.suffix
+      : parsed1.suffix.slice(0, preReleaseIndex1);
+    const channel2 = preReleaseIndex2 < 0
+      ? parsed2.suffix
+      : parsed2.suffix.slice(0, preReleaseIndex2);
+    const channelComparison = this.compareVersionTokens(channel1, channel2);
+    if (channelComparison !== 0) {
+      return channelComparison;
+    }
+
+    const isPreRelease1 = preReleaseIndex1 >= 0;
+    const isPreRelease2 = preReleaseIndex2 >= 0;
+    if (isPreRelease1 !== isPreRelease2) {
+      return isPreRelease1 ? -1 : 1;
+    }
+
+    if (!isPreRelease1) {
+      return 0;
+    }
+
+    return this.compareVersionTokens(
+      parsed1.suffix.slice(preReleaseIndex1),
+      parsed2.suffix.slice(preReleaseIndex2)
+    );
+  }
+
+  private parseVersion(version: string): { core: number[]; suffix: Array<number | string> } {
+    const normalized = (version ?? '').trim().replace(/^v/i, '');
+    const match = normalized.match(/^(\d+(?:\.\d+)*)(.*)$/);
+    const core = (match?.[1] ?? '0').split('.').map(part => Number(part));
+    const suffix = (match?.[2] ?? normalized)
+      .toLowerCase()
+      .match(/[a-z]+|\d+/g)
+      ?.map(part => /^\d+$/.test(part) ? Number(part) : part) ?? [];
+
+    return { core, suffix };
+  }
+
+  private compareVersionTokens(
+    tokens1: Array<number | string>,
+    tokens2: Array<number | string>
+  ): number {
+    const length = Math.max(tokens1.length, tokens2.length);
+    for (let i = 0; i < length; i++) {
+      const part1 = tokens1[i];
+      const part2 = tokens2[i];
+
+      if (part1 === undefined || part2 === undefined) {
+        return part1 === part2 ? 0 : part1 === undefined ? -1 : 1;
+      }
+      if (part1 === part2) {
+        continue;
+      }
+      if (typeof part1 === 'number' && typeof part2 === 'number') {
+        return part1 > part2 ? 1 : -1;
+      }
+      if (typeof part1 === 'number' || typeof part2 === 'number') {
+        return typeof part1 === 'number' ? -1 : 1;
+      }
+      return part1 > part2 ? 1 : -1;
     }
 
     return 0;
@@ -220,6 +309,48 @@ export class GithubUpdateService {
    */
   public findAsset(release: GithubRelease, filename: string): GithubAsset | undefined {
     return release.assets.find(asset => asset.name === filename);
+  }
+
+  /** Find the regular or LTS factory asset matching the device model. */
+  public findFactoryAsset(
+    release: GithubRelease,
+    deviceModel: string,
+    currentVersion = ''
+  ): GithubAsset | undefined {
+    const normalizedModel = this.normalizeDeviceModel(deviceModel);
+    const labels = normalizedModel === 'NerdQAxe+'
+      ? [/nqa-lts/i.test(currentVersion) ? 'NerdQAxePlus-LTS' : normalizedModel]
+      : [normalizedModel];
+
+    return labels
+      .map(label => `esp-miner-factory-${label}-${release.tag_name}.bin`)
+      .map(filename => this.findAsset(release, filename))
+      .find((asset): asset is GithubAsset => asset !== undefined);
+  }
+
+  public getDefaultFactoryFilename(
+    release: GithubRelease,
+    deviceModel: string,
+    currentVersion = ''
+  ): string {
+    const releaseLabel = this.getReleaseModelLabel(deviceModel, currentVersion);
+    return `esp-miner-factory-${releaseLabel}-${release.tag_name}.bin`;
+  }
+
+  public getFirmwareFilename(deviceModel: string, currentVersion: string): string {
+    const releaseLabel = this.getReleaseModelLabel(deviceModel, currentVersion);
+    return `esp-miner-${releaseLabel}.bin`;
+  }
+
+  private getReleaseModelLabel(deviceModel: string, currentVersion: string): string {
+    const normalizedModel = this.normalizeDeviceModel(deviceModel);
+    return normalizedModel === 'NerdQAxe+' && /nqa-lts/i.test(currentVersion)
+      ? 'NerdQAxePlus-LTS'
+      : normalizedModel;
+  }
+
+  private normalizeDeviceModel(model: string): string {
+    return (model ?? '').replace(/γ/g, 'Gamma').replace(/\s+/g, '');
   }
 
 

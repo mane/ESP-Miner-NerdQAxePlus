@@ -96,20 +96,10 @@ int StratumManagerFallback::getNextActivePool()
     return m_selected;
 }
 
-const char *StratumManagerFallback::getCurrentPoolHost()
+bool StratumManagerFallback::copyCurrentPoolEndpoint(char *host, size_t hostSize, int *port)
 {
-    if (!m_stratumConfig[m_selected]) {
-        return "-";
-    }
-    return m_stratumConfig[m_selected]->getHost();
-}
-
-int StratumManagerFallback::getCurrentPoolPort()
-{
-    if (!m_stratumConfig[m_selected]) {
-        return 0;
-    }
-    return m_stratumConfig[m_selected]->getPort();
+    PThreadGuard lock(m_mutex);
+    return copyPoolEndpointLocked(m_selected, host, hostSize, port);
 }
 
 uint32_t StratumManagerFallback::selectAsicDiff(int pool, uint32_t poolDiff)
@@ -177,4 +167,3 @@ void StratumManagerFallback::getManagerInfoJson(JsonObject &obj) {
     pool["activeProtocol"] = m_stratumConfig[m_selected] ? (int)m_stratumConfig[m_selected]->getProtocol() : 0;
     pool["encrypted"] = m_stratumConfig[m_selected] ? (m_stratumConfig[m_selected]->isSV2() || m_stratumConfig[m_selected]->isTLS()) : false;
 }
-

@@ -47,7 +47,7 @@ protected:
     esp_err_t follow_redirect(esp_http_client_handle_t client, char* url, int url_len, redirect_ctx_t *ctx);
 
     esp_err_t do_www_update(uint8_t *data);
-    esp_err_t do_firmware_update(esp_http_client_handle_t client);
+    esp_err_t do_firmware_update(esp_http_client_handle_t client, const uint8_t *prefix, size_t prefix_len);
     esp_err_t ota_update_from_factory(const char *start_url, bool keep_config);
     esp_err_t erase_nvs_partition();
 

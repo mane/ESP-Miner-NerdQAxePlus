@@ -1,6 +1,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <math.h>
 
 #include "esp_log.h"
 
@@ -10,13 +11,18 @@ const char *TAG = "emc2302";
 
 esp_err_t EMC2302_set_fan_speed(int channel, float percent)
 {
+    if (channel < 0 || channel > 1 || !isfinite(percent)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (percent < 0.0f) percent = 0.0f;
+    if (percent > 1.0f) percent = 1.0f;
+
     int value = (int) (percent * 255.0 + 0.5);
+    value = (value < 0) ? 0 : value;
     value = (value > 255) ? 255 : value;
 
     // 0: fan2, 1: fan1
     uint8_t base = !channel ? EMC2302_FAN2 : EMC2302_FAN1;
-
-    esp_err_t err;
 
     ESP_LOGI(TAG, "setting fan %d speed to %.2f%% (0x%02x)", channel, percent * 100.0, value);
     return i2c_master_register_write_byte(EMC2302_ADDR, base + EMC2302_OFS_FAN_SETTING, (uint8_t) value);
@@ -24,6 +30,10 @@ esp_err_t EMC2302_set_fan_speed(int channel, float percent)
 
 esp_err_t EMC2302_get_fan_speed(int channel, uint16_t *dst)
 {
+    if (!dst || channel < 0 || channel > 1) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     esp_err_t err;
     uint8_t tach_lsb, tach_msb;
 
@@ -48,6 +58,16 @@ esp_err_t EMC2302_get_fan_speed(int channel, uint16_t *dst)
     // 3 LSBs are unused
     int rpm_raw = (tach_msb << 5) | (tach_lsb >> 3) ;
 
+    // Zero is an invalid/out-of-range tach period. Guard it before division.
+    if (rpm_raw == 0 || rpm_raw >= 8191) {
+        *dst = 0;
+        if (rpm_raw == 0) {
+            ESP_LOGW(TAG, "invalid zero tach period on fan %d", channel);
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        return ESP_OK;
+    }
+
     const int poles = 2;
     const int n = 5; // number of edges measured (typically five for a two-pole fan)
 
@@ -64,15 +84,6 @@ esp_err_t EMC2302_get_fan_speed(int channel, uint16_t *dst)
 #ifdef _DEBUG_LOG_
     ESP_LOGI(TAG, "raw fan speed: %d", rpm_raw);
 #endif
-
-    // we get this if no fan is connected
-    // would be displayed as 480RPM
-    // so we actually can't measure lower than that
-    // but the datasheet says the measurement range is
-    // 480 to 16000RPM. So it seems to be fine.
-    if (rpm_raw >= 8191) {
-        rpm = 0;
-    }
 
     if (rpm > 65535) {
         ESP_LOGE(TAG, "fan speed RPM > 16bit: %d", rpm);

@@ -16,7 +16,9 @@ public:
         PSU_FAULT,
         IOUT_OC_FAULT,
         VOUT_FAULT,
-        COINBASE_VERIFY_FAULT
+        COINBASE_VERIFY_FAULT,
+        BOARD_INIT_FAULT,
+        ASIC_INIT_FAULT
     };
 
     static const char* errorToStr(Error err) {
@@ -28,6 +30,8 @@ public:
             case Error::IOUT_OC_FAULT: return "CURRENT PROTECTION";
             case Error::VOUT_FAULT: return "VOLTAGE PROTECTION";
             case Error::COINBASE_VERIFY_FAULT: return "VERIFY FAILED";
+            case Error::BOARD_INIT_FAULT: return "BOARD INIT FAILED";
+            case Error::ASIC_INIT_FAULT: return "ASIC INIT FAILED";
             default: return "INVALID ERROR";
         }
     }
@@ -40,7 +44,7 @@ public:
     int m_asicCount;
     int m_chipsDetected = 0;
     int m_numTempSensors = 0;
-    float *m_chipTemps;
+    float *m_chipTemps = nullptr;
     const char *m_swarmColorName = "blue";
     uint32_t m_vrFrequency;
     uint32_t m_defaultVrFrequency;

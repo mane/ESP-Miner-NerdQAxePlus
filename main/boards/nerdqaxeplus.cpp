@@ -24,6 +24,22 @@ static const char* TAG="nerdqaxe+";
 
 #define VR_TEMP1075_ADDR   0x1
 
+static bool configureSafeOutput(gpio_num_t pin, const char *name)
+{
+    gpio_pad_select_gpio(pin);
+    esp_err_t err = gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure %s GPIO: %s", name, esp_err_to_name(err));
+        return false;
+    }
+    err = gpio_set_level(pin, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to drive %s GPIO low: %s", name, esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
 NerdQaxePlus::NerdQaxePlus() : Board() {
     m_deviceModel = "NerdQAxe+";
     m_miningAgent = m_deviceModel;
@@ -85,7 +101,19 @@ NerdQaxePlus::NerdQaxePlus() : Board() {
 
 bool NerdQaxePlus::initBoard()
 {
-    Board::initBoard();
+    // Establish a safe hardware state before touching any shared buses. This
+    // also makes all early-return paths leave reset asserted and both rails off.
+    bool safe_gpio_ok = true;
+    safe_gpio_ok &= configureSafeOutput(BM1368_RST_PIN, "ASIC reset");
+    safe_gpio_ok &= configureSafeOutput(TPS53647_EN_PIN, "VREG enable");
+    safe_gpio_ok &= configureSafeOutput(LDO_EN_PIN, "LDO enable");
+    if (!safe_gpio_ok) {
+        return false;
+    }
+
+    if (!Board::initBoard()) {
+        return false;
+    }
 
     SERIAL_init();
 
@@ -111,29 +139,31 @@ bool NerdQaxePlus::initBoard()
         ESP_LOGI(TAG, "No CAN extension board");
     }
 
-    EMC2302_init(m_fanInvertPolarity);
-    setFanSpeed(m_fanPerc);
-    setFanSpeed(m_fanPerc);
-
-    // configure gpios
-    gpio_pad_select_gpio(TPS53647_EN_PIN);
-    gpio_set_direction(TPS53647_EN_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_level(TPS53647_EN_PIN, 0);
-
-    gpio_pad_select_gpio(LDO_EN_PIN);
-    gpio_set_direction(LDO_EN_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_level(LDO_EN_PIN, 0);
-
-    gpio_pad_select_gpio(BM1368_RST_PIN);
-    gpio_set_direction(BM1368_RST_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_level(BM1368_RST_PIN, 0);
-
+    if (!EMC2302_init(m_fanInvertPolarity)) {
+        ESP_LOGE(TAG, "Fan controller initialization failed");
+        m_hasCanExtension = false;
+        return false;
+    }
+    // Run both fans at full speed until PowerManagementTask applies the
+    // configured policy. Failure to command either channel is not safe to mine.
+    for (int channel = 0; channel < m_numFans; ++channel) {
+        esp_err_t fan_err = EMC2302_set_fan_speed(channel, 1.0f);
+        if (fan_err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to start fan %d: %s", channel, esp_err_to_name(fan_err));
+            m_hasCanExtension = false;
+            return false;
+        }
+    }
 
     return true;
 }
 
 void NerdQaxePlus::shutdown() {
-    setVoltage(0.0);
+    // Assert reset first so no ASIC can run while either rail decays.
+    setAsicReset(0);
+    VREG_disable();
+    m_isInitialized = false;
+    m_isBuckInitialized = false;
 
     vTaskDelay(pdMS_TO_TICKS(500));
 
@@ -150,6 +180,9 @@ void NerdQaxePlus::setAsicReset(bool state) {
 
 bool NerdQaxePlus::initAsics()
 {
+    m_isInitialized = false;
+    m_isBuckInitialized = false;
+
     // disable buck (disables EN pin)
     setVoltage(0.0);
 
@@ -158,6 +191,13 @@ bool NerdQaxePlus::initAsics()
 
     // set reset low
     setAsicReset(0);
+
+    if (!m_tps || !m_asics) {
+        ESP_LOGE(TAG, "ASIC or voltage-regulator driver is unavailable");
+        VREG_disable();
+        LDO_disable();
+        return false;
+    }
 
     // wait 250ms
     vTaskDelay(pdMS_TO_TICKS(250));
@@ -169,11 +209,21 @@ bool NerdQaxePlus::initAsics()
     vTaskDelay(pdMS_TO_TICKS(100));
 
     // init buck and enable output
-    m_tps->init(m_numPhases, m_imax, m_ifault);
+    if (!m_tps->init(m_numPhases, m_imax, m_ifault)) {
+        ESP_LOGE(TAG, "error initializing voltage regulator");
+        VREG_disable();
+        LDO_disable();
+        return false;
+    }
 
     // set the init voltage
     // use the higher voltage for initialization
-    setVoltage((float) MAX(m_initVoltageMillis, m_asicVoltageMillis) / 1000.0f);
+    if (!setVoltage((float) MAX(m_initVoltageMillis, m_asicVoltageMillis) / 1000.0f)) {
+        ESP_LOGE(TAG, "error setting ASIC initialization voltage");
+        VREG_disable();
+        LDO_disable();
+        return false;
+    }
 
     // wait 500ms
     vTaskDelay(pdMS_TO_TICKS(500));
@@ -190,6 +240,10 @@ bool NerdQaxePlus::initAsics()
     m_chipsDetected = m_asics->init(m_asicFrequency, m_asicCount, m_asicMaxDifficulty, m_vrFrequency);
     if (!m_chipsDetected) {
         ESP_LOGE(TAG, "error initializing asics!");
+        setAsicReset(0);
+        VREG_disable();
+        LDO_disable();
+        m_isBuckInitialized = false;
         return false;
     }
     int maxBaud = m_asics->setMaxBaud();
@@ -201,7 +255,14 @@ bool NerdQaxePlus::initAsics()
     vTaskDelay(pdMS_TO_TICKS(500));
 
     // set final output voltage
-    setVoltage((float) m_asicVoltageMillis / 1000.0f);
+    if (!setVoltage((float) m_asicVoltageMillis / 1000.0f)) {
+        ESP_LOGE(TAG, "error setting final ASIC voltage");
+        setAsicReset(0);
+        VREG_disable();
+        LDO_disable();
+        m_isBuckInitialized = false;
+        return false;
+    }
 
     m_isInitialized = true;
     return true;
@@ -303,7 +364,7 @@ int NerdQaxePlus::detectNumTempSensors() {
 }
 
 float NerdQaxePlus::getTemperature(int index) {
-    if (index >= getNumTempSensors()) {
+    if (index < 0 || index >= getNumTempSensors()) {
         return 0.0;
     }
 

@@ -41,8 +41,8 @@ void System::init() {
     m_startTime = esp_timer_get_time();
     m_startupDone = false;
 
-    // Initialize overheat flag
-    m_boardError = Board::Error::NONE;
+    // Preserve failures detected during the early board bring-up. System is a
+    // static object (zero-initialized), so a clean boot is already NONE here.
 
     // Initialize shown overlay flag and last error code
     m_showsOverlay = false;
@@ -314,5 +314,4 @@ void System::task() {
 }
 
 void System::notifyMiningStarted() {}
-
 

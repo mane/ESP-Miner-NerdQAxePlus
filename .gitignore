@@ -41,3 +41,7 @@ config.cvs
 managed_components/*
 release/
 esp-miner-*.bin
+
+# Python test caches
+**/__pycache__/
+*.py[cod]

@@ -61,16 +61,23 @@ esp_err_t NetworkManager::start(const char *wifi_ssid, const char *wifi_pass, co
 
     /* Start WiFi (APSTA + STA) */
     m_wifiStaNetif = wifi_init(wifi_ssid, wifi_pass, hostname);
+    const bool wifiStarted = (m_wifiStaNetif != nullptr);
+    if (!wifiStarted) {
+        ESP_LOGE(TAG_NET, "WiFi init failed");
+    }
 
     /* Start Ethernet only on boards that have it */
+    bool ethStarted = false;
     if (hasEth) {
         err = m_eth.init();
         if (err != ESP_OK) {
             ESP_LOGW(TAG_NET, "ETH init failed: %s", esp_err_to_name(err));
+        } else {
+            ethStarted = true;
         }
     }
 
-    return ESP_OK;
+    return (wifiStarted || ethStarted) ? ESP_OK : ESP_FAIL;
 }
 
 EventBits_t NetworkManager::waitAnyIpMs(TickType_t ticks)
@@ -127,6 +134,13 @@ void NetworkManager::shutdownApOnce()
 
 void NetworkManager::onWifiGotIp()
 {
+    // A stale GOT_IP event can already be queued when Ethernet stops WiFi.
+    // Do not advertise a route that the manager deliberately disabled.
+    if (m_wifiDisabledBecauseEth) {
+        ESP_LOGW(TAG_NET, "Ignoring stale WiFi GOT_IP while Ethernet is preferred");
+        return;
+    }
+
     m_wifiHasIp = true;
     if (m_eg) {
         xEventGroupSetBits(m_eg, NET_WIFI_IP);
@@ -157,9 +171,18 @@ void NetworkManager::onEthGotIp()
     if (!m_wifiDisabledBecauseEth) {
         ESP_LOGI(TAG_NET, "ETH has IP -> stopping WiFi");
         esp_wifi_disconnect();
-        esp_wifi_stop();
-        m_wifiHasIp = false;
-        m_wifiDisabledBecauseEth = true;
+        esp_err_t err = esp_wifi_stop();
+        if (err == ESP_OK) {
+            m_wifiHasIp = false;
+            if (m_eg) {
+                xEventGroupClearBits(m_eg, NET_WIFI_IP);
+            }
+            m_wifiDisabledBecauseEth = true;
+        } else {
+            // Keep WiFi logically enabled: it may still be the only fallback
+            // if Ethernet drops after this failed stop.
+            ESP_LOGE(TAG_NET, "esp_wifi_stop failed: %s", esp_err_to_name(err));
+        }
     }
 
     updateDefaultRoute();
@@ -176,8 +199,12 @@ void NetworkManager::onEthLinkDown()
     // ETH gone -> restart WiFi so we have fallback connectivity
     if (m_wifiDisabledBecauseEth) {
         ESP_LOGI(TAG_NET, "ETH link down -> restarting WiFi");
-        esp_wifi_start();
-        m_wifiDisabledBecauseEth = false;
+        esp_err_t err = esp_wifi_start();
+        if (err == ESP_OK) {
+            m_wifiDisabledBecauseEth = false;
+        } else {
+            ESP_LOGE(TAG_NET, "esp_wifi_start failed: %s", esp_err_to_name(err));
+        }
     }
 
     updateDefaultRoute();

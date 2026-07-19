@@ -14,6 +14,7 @@ SRCS
     "boards/drivers/fxl6408.cpp"
     "history.cpp"
     "discord.cpp"
+    "fan_config_safety.cpp"
     "fan_controller.cpp"
     "./pid/PID_v1_bc.cpp"
     "./pid/pid_timer.cpp"
@@ -21,6 +22,7 @@ SRCS
     "./http_server/http_cors.cpp"
     "./http_server/http_utils.cpp"
     "./http_server/http_websocket.cpp"
+    "./http_server/fan_settings_patch.cpp"
     "./http_server/handler_influx.cpp"
     "./http_server/handler_alert.cpp"
     "./http_server/handler_can_swarm.cpp"
@@ -71,7 +73,6 @@ SRCS
     "./displays/ui_helpers.cpp"
     "./displays/images/ui_font_DigitalNumbers16.c"
     "./displays/images/ui_font_DigitalNumbers28.c"
-    "./displays/images/ui_font_DigitalNumbers16.c"
     "./displays/images/ui_font_OpenSansBold13.c"
     "./displays/images/ui_font_OpenSansBold14.c"
     "./displays/images/ui_font_OpenSansBold24.c"
@@ -134,6 +135,7 @@ REQUIRES
 
 
 set(WEB_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/http_server/axe-os")
+include(ExternalProject)
 
 option(BUILD_WEB "Enable web UI build" ON)
 
@@ -144,8 +146,8 @@ if(BUILD_WEB)
         spiffs_create_partition_image(www ${WEB_SRC_DIR}/dist/axe-os FLASH_IN_PROJECT)
     else()
         find_program(NPM_EXECUTABLE npm)
-        if(NOT NPM_EXECUTABLE AND NOT EXISTS ${WEB_SRC_DIR}/dist)
-            message(FATAL_ERROR "npm is not found! Please install it to proceed.")
+        if(NOT NPM_EXECUTABLE)
+            message(FATAL_ERROR "npm is required when BUILD_WEB=ON. Install Node.js/npm or configure with BUILD_WEB=OFF and provide a prebuilt dist/axe-os directory.")
         endif()
 
         ExternalProject_Add(
@@ -153,7 +155,7 @@ if(BUILD_WEB)
             PREFIX ${CMAKE_BINARY_DIR}/web_ui_dist
             SOURCE_DIR ${WEB_SRC_DIR}
             DOWNLOAD_COMMAND ""
-            CONFIGURE_COMMAND ${NPM_EXECUTABLE} i
+            CONFIGURE_COMMAND ${NPM_EXECUTABLE} ci --no-audit --no-fund
             BUILD_COMMAND ${NPM_EXECUTABLE} run build
             INSTALL_COMMAND ""
             BUILD_ALWAYS TRUE
@@ -166,5 +168,8 @@ if(BUILD_WEB)
     endif()
 else()
     message(STATUS "Web UI build disabled – using prebuilt dist/ directory.")
+    if(NOT EXISTS "${WEB_SRC_DIR}/dist/axe-os")
+        message(FATAL_ERROR "BUILD_WEB=OFF requires a prebuilt ${WEB_SRC_DIR}/dist/axe-os directory.")
+    endif()
     spiffs_create_partition_image(www ${WEB_SRC_DIR}/dist/axe-os FLASH_IN_PROJECT)
 endif()

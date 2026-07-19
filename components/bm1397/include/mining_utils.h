@@ -24,7 +24,7 @@ void double_sha256(const char *hex_string, uint8_t output_hash[65]);
 void double_sha256_bin(const uint8_t *data, const size_t data_len, uint8_t hash[32]);
 
 void swap_endian_words(const char *hex, uint8_t *output);
-void swap_endian_words_bin(uint8_t *data, uint8_t *output, size_t data_length);
+void swap_endian_words_bin(const uint8_t *data, uint8_t *output, size_t data_length);
 
 void reverse_bytes(uint8_t *data, size_t len);
 

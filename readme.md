@@ -56,7 +56,8 @@ install releases from `mane/ESP-Miner-NerdQAxePlus`.
 ### Clone repository and prepare config
 
 ```bash
-git clone https://github.com/mane/ESP-Miner-NerdQAxePlus
+git clone --branch lts/nerdqaxeplus-only --single-branch \
+  https://github.com/mane/ESP-Miner-NerdQAxePlus
 cd ESP-Miner-NerdQAxePlus
 cp config.cvs.example config.cvs
 ```
@@ -69,7 +70,7 @@ To switch the board into bootload mode, reset the device with the `boot` button
 pressed.
 
 ```bash
-TAG=v1.1.1-mane.6-nerdqaxeplus-lts.1  # replace with the latest LTS tag
+TAG=v1.1.1-mane.6-nqa-lts3  # replace with the latest LTS tag
 BOARD_LABEL=NerdQAxePlus-LTS
 curl -L -o "esp-miner-factory-${BOARD_LABEL}-${TAG}.bin" \
   "https://github.com/mane/ESP-Miner-NerdQAxePlus/releases/download/${TAG}/esp-miner-factory-${BOARD_LABEL}-${TAG}.bin"
@@ -97,14 +98,28 @@ export BOARD=NERDQAXEPLUS
 
 The build outputs `build/esp-miner.bin` and `build/www.bin`.
 
+The Docker wrappers derive the Git tag and commit on the host and pass them to
+the container, so firmware and Web UI report the same version even when the
+checkout is a Git worktree. For a release build you can override them explicitly:
+
+```bash
+VERSION_TAG=v1.1.1-mane.6-nqa-lts3 COMMIT_HASH="$(git rev-parse --short HEAD)" \
+  ./docker/idf.sh build
+```
+
 ### Manual Docker build with the published builder image
 
 ```bash
+VERSION_TAG="$(git describe --tags --abbrev=0 --dirty --always)"
+COMMIT_HASH="$(git rev-parse --short HEAD)"
+
 docker run --rm --user root -e BOARD=NERDQAXEPLUS \
+  -e VERSION_TAG -e COMMIT_HASH \
   -v "$PWD":/home/builder/project \
   shufps/esp-idf-builder:0.0.1 idf.py set-target esp32s3
 
 docker run --rm --user root -e BOARD=NERDQAXEPLUS \
+  -e VERSION_TAG -e COMMIT_HASH \
   -v "$PWD":/home/builder/project \
   shufps/esp-idf-builder:0.0.1 idf.py build
 ```
@@ -130,3 +145,20 @@ bitaxetool --config config.cvs --firmware esp-miner-factory-NerdQAxePlus-LTS.bin
 
 The NerdQAxe+ firmware supports Influx and this repository provides a Grafana
 dashboard setup under [`monitoring/`](monitoring/).
+
+## Read-only device health check
+
+After an update, the bundled script can verify the board identity, firmware,
+mining state, pool connection, memory, temperatures, efficiency and fan
+tachometers without changing device settings:
+
+```bash
+python3 scripts/device_health_check.py http://192.168.68.104/ \
+  --expect-model 'NerdQAxe+' \
+  --expect-version 'v1.1.1-mane.6-nqa-lts3'
+```
+
+Omit `--expect-version` when checking an unknown or development build. Use
+`--json` for monitoring or automation. A fan commanded above 30% while
+reporting 0 RPM is shown as a warning; shutdown, board faults, zero hashrate,
+over-temperature and loss of every Stratum pool are reported as errors.

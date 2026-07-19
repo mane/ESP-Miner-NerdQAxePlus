@@ -73,7 +73,7 @@ class MiningInfoV2Extended : public MiningInfoBase {
     void setDifficulty(uint32_t difficulty);
 
     /// Update with new extended job data from SV2 pool
-    void updateJob(const sv2_ext_job_t *job,
+    bool updateJob(const sv2_ext_job_t *job,
                    const uint8_t *extranonce_prefix, uint8_t extranonce_prefix_len,
                    uint8_t extranonce_size,
                    uint32_t version_mask, uint32_t difficulty);

@@ -1,7 +1,7 @@
-import { HttpErrorResponse, HttpEventType } from '@angular/common/http';
+import { HttpEventType } from '@angular/common/http';
 import { Component, OnInit, OnDestroy } from '@angular/core';
 import { FormControl } from '@angular/forms';
-import { combineLatest, map, Observable, catchError, of, shareReplay, startWith, Subscription, interval } from 'rxjs';
+import { catchError, combineLatest, Observable, of, shareReplay, startWith, Subscription, interval } from 'rxjs';
 import { switchMap, tap, take } from 'rxjs/operators';
 import { GithubUpdateService, UpdateStatus, VersionComparison, GithubRelease } from '../../services/github-update.service';
 import { LoadingService } from '../../services/loading.service';
@@ -48,6 +48,8 @@ export class SettingsComponent implements OnInit, OnDestroy {
 
   private updateStatusSub?: Subscription;
   private sawRebooting = false;
+  private consecutiveStatusErrors = 0;
+  private otaErrorShown = false;
 
   public currentStep: string = "";
 
@@ -65,8 +67,6 @@ export class SettingsComponent implements OnInit, OnDestroy {
   // Enhanced progress tracking
   public otaProgress: number = 0;
   private rebootCheckInterval?: any;
-
-  private normalizedModel: string = '';
 
   public keepConfigCtrl = new FormControl<boolean>(true);
   public includePrereleasesCtrl = new FormControl<boolean>(false);
@@ -97,10 +97,10 @@ export class SettingsComponent implements OnInit, OnDestroy {
         this.asicModel = info.asicModel;
         this.otpEnabled = !!info.otp;
 
-        // Replace 'γ' with 'Gamma' if present and remove spaces
-        // Keep special characters like + as GitHub releases use them
-        this.normalizedModel = this.normalizeModel(this.deviceModel)
-        this.expectedFileName = `esp-miner-${this.normalizedModel}.bin`;
+        this.expectedFileName = this.githubUpdateService.getFirmwareFilename(
+          this.deviceModel,
+          this.currentVersion
+        );
 
         console.log('Device model from API:', this.deviceModel);
         console.log('Expected filename:', this.expectedFileName);
@@ -114,13 +114,18 @@ export class SettingsComponent implements OnInit, OnDestroy {
       this.includePrereleasesCtrl.valueChanges.pipe(startWith(this.includePrereleasesCtrl.value)),
       this.info$
     ]).pipe(
-      switchMap(([include]) =>
-        this.githubUpdateService.getReleases(include).pipe(
-          map(list =>
-            (list ?? []).filter(r =>
-              r.assets?.some(a => a.name === this.buildFactoryNameFor(r))
-            )
-          )
+      switchMap(([include, info]) =>
+        this.githubUpdateService.getReleases(
+          include,
+          r =>
+            !!this.githubUpdateService.findFactoryAsset(r, info.deviceModel, info.version)
+        ).pipe(
+          tap(list => {
+            if (!include) {
+              this.latestStableRelease = list.find(release => release.isLatest) ?? list[0] ?? null;
+              this.updateVersionStatus();
+            }
+          })
         )
       ),
       tap(list => {
@@ -136,11 +141,9 @@ export class SettingsComponent implements OnInit, OnDestroy {
     this.checkUpdateStatus();
   }
 
-  private normalizeModel(model) {
-    return model.replace(/γ/g, 'Gamma').replace(/\s+/g, '');
-  }
-
   ngOnDestroy() {
+    this.stopUpdatePolling();
+
     // Clear reboot check interval
     if (this.rebootCheckInterval) {
       clearInterval(this.rebootCheckInterval);
@@ -425,16 +428,41 @@ export class SettingsComponent implements OnInit, OnDestroy {
   private startUpdatePolling() {
     this.stopUpdatePolling();
     this.sawRebooting = false;
+    this.consecutiveStatusErrors = 0;
+    this.otaErrorShown = false;
 
     this.updateStatusSub = interval(1000)
       .pipe(
         // Poll OTA status every second
-        switchMap(() => this.systemService.getGithubOTAStatus()),
-        tap((status: IUpdateStatus) => {
+        switchMap(() => this.systemService.getGithubOTAStatus().pipe(
+          catchError((err) => {
+            this.consecutiveStatusErrors++;
+
+            if (this.sawRebooting) {
+              // Losing HTTP after the backend announced `rebooting` is expected;
+              // startRebootCheck() owns recovery from this point onward.
+              setTimeout(() => this.stopUpdatePolling());
+            } else if (this.consecutiveStatusErrors >= 5) {
+              this.failOneClickUpdate(err?.message || err?.error || 'status unavailable');
+            }
+            // Keep the outer interval alive for transient network failures.
+            return of(null);
+          })
+        )),
+        tap((status: IUpdateStatus | null) => {
+          if (!status) {
+            return;
+          }
+          this.consecutiveStatusErrors = 0;
+
           // Update UI state
           this.otaProgress = status.progress;
           this.currentStep = `UPDATE.STEP_${status.step.toUpperCase()}`;
-          //console.log('Update status:', status);
+
+          if (status.step === 'error') {
+            this.failOneClickUpdate();
+            return;
+          }
 
           // check if device finished updating and only fire the success toast a single time
           if (status.step === 'rebooting' && !this.sawRebooting) {
@@ -446,9 +474,21 @@ export class SettingsComponent implements OnInit, OnDestroy {
       )
       .subscribe({
         error: (err) => {
-          // ignore errors
+          this.failOneClickUpdate(err?.message || err?.error);
         }
       });
+  }
+
+  private failOneClickUpdate(detail?: string) {
+    this.isOneClickUpdate = false;
+    this.stopUpdatePolling();
+    if (!this.otaErrorShown) {
+      const message = detail
+        ? `${this.translate.instant('TOAST.UPDATE_FAILED')}: ${detail}`
+        : this.translate.instant('TOAST.UPDATE_FAILED');
+      this.toastrService.danger(message, this.translate.instant('TOAST.ERROR'));
+      this.otaErrorShown = true;
+    }
   }
 
   // we can resume the update progress status on a page reload because
@@ -465,6 +505,10 @@ export class SettingsComponent implements OnInit, OnDestroy {
             this.otaProgress = status.progress;
             this.currentStep = `UPDATE.STEP_${status.step.toUpperCase()}`;
             this.startUpdatePolling();
+          } else if (status.step === 'error') {
+            this.otaProgress = status.progress;
+            this.currentStep = `UPDATE.STEP_${status.step.toUpperCase()}`;
+            this.failOneClickUpdate();
           }
         },
       });
@@ -502,7 +546,15 @@ export class SettingsComponent implements OnInit, OnDestroy {
 
   // Helper to build expected factory filename for a given release
   private buildFactoryNameFor(release: GithubRelease): string {
-    return `esp-miner-factory-${this.normalizedModel}-${release.tag_name}.bin`;
+    return this.githubUpdateService.findFactoryAsset(
+      release,
+      this.deviceModel,
+      this.currentVersion
+    )?.name ?? this.githubUpdateService.getDefaultFactoryFilename(
+      release,
+      this.deviceModel,
+      this.currentVersion
+    );
   }
 
   public getAppVersion() {

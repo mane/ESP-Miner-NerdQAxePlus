@@ -12,6 +12,7 @@
 #include "global_state.h"
 #include "boards/board.h"
 #include "hashrate_monitor_task.h"
+#include "fan_config_safety.h"
 #include "mining.h"
 #include "mining_utils.h"
 #include "nvs_config.h"
@@ -148,13 +149,38 @@ static void handle_settings_cmd(const uint8_t *p, size_t len)
         case CAN_CMD_SET_FAN:
             if (len >= 6) {
                 uint8_t ch = p[1], mode = p[2], speed = p[3], target = p[4], overheat = p[5];
-                Config::setFanMode(ch, mode);
-                Config::setFanManualSpeed(ch, speed);
-                Config::setFanPidTargetTemp(ch, target);
-                Config::setFanOverheatTemp(ch, overheat);
+                Board *board = SYSTEM_MODULE.getBoard();
+                int numFans = board ? board->getNumFans() : 0;
+                if (ch >= FanConfigSafety::MAX_CHANNELS || ch >= numFans) {
+                    ESP_LOGE(TAG, "CMD SET_FAN rejected: channel %u out of range", ch);
+                    break;
+                }
+
+                FanConfigSafety::Settings settings = FanConfigSafety::load(board, ch);
+                char currentError[128]{};
+                if (!FanConfigSafety::validate(settings, ch, numFans, currentError, sizeof(currentError))) {
+                    settings = FanConfigSafety::failSafe(ch);
+                }
+                settings.mode = mode;
+                settings.manualSpeed = speed;
+                settings.targetTemp = target;
+                settings.overheatTemp = overheat;
+
+                char fanError[128]{};
+                if (!FanConfigSafety::validate(settings, ch, numFans, fanError, sizeof(fanError))) {
+                    ESP_LOGE(TAG, "CMD SET_FAN rejected: %s", fanError);
+                    break;
+                }
+
+                POWER_MANAGEMENT_MODULE.lock();
+                FanConfigSafety::store(ch, settings);
+                board->loadSettings();
                 POWER_MANAGEMENT_MODULE.getFanController().loadSettings();
+                POWER_MANAGEMENT_MODULE.unlock();
                 ESP_LOGI(TAG, "CMD SET_FAN ch%d mode=%d overheat=%d → applied", ch, mode, overheat);
                 send_config = true;
+            } else {
+                ESP_LOGE(TAG, "CMD SET_FAN rejected: malformed payload");
             }
             break;
         case CAN_CMD_SET_DISPLAY:

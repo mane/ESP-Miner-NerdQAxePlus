@@ -126,8 +126,14 @@ void StratumManager::task()
         }
         vTaskDelay(pdMS_TO_TICKS(30000));
 
+        uint64_t last_submit_response = 0;
+        {
+            PThreadGuard lock(m_mutex);
+            last_submit_response = m_lastSubmitResponseTimestamp;
+        }
+
         // Reset watchdog if there was a submit response within the last hour
-        if (m_lastSubmitResponseTimestamp && ((esp_timer_get_time() - m_lastSubmitResponseTimestamp) / 1000000) < 3600) {
+        if (last_submit_response && ((esp_timer_get_time() - last_submit_response) / 1000000) < 3600) {
             esp_task_wdt_reset();
         }
     }
@@ -165,7 +171,7 @@ void StratumManager::dispatch(int pool, JsonDocument &doc)
     // to not have the struct on the stack
     memset(&m_stratum_api_v1_message, 0, sizeof(StratumApiV1Message));
 
-    if (!StratumApi::parse(&m_stratum_api_v1_message, doc)) {
+    if (!StratumApi::parse(&m_stratum_api_v1_message, doc, selected->m_lastSetupMessageId)) {
         ESP_LOGE(m_tag, "error in stratum");
         // free memory
         freeStratumV1Message(&m_stratum_api_v1_message);
@@ -257,6 +263,10 @@ void StratumManager::dispatch(int pool, JsonDocument &doc)
 void StratumManager::submitShare(int pool, const char *jobid, const char *extranonce_2, const uint32_t ntime, const uint32_t nonce,
                                  const uint32_t version_rolled, const uint32_t version_base)
 {
+    if (pool < 0 || pool >= 2 || !jobid || !extranonce_2) {
+        ESP_LOGE(m_tag, "invalid share submission parameters");
+        return;
+    }
     if (!m_stratumTasks[pool]) {
         ESP_LOGE(m_tag, "stratum task is null");
         return;
@@ -277,6 +287,23 @@ void StratumManager::copyConfigInto(int pool, StratumConfig *dst) {
         return;
     }
     m_stratumConfig[pool]->copyInto(dst);
+}
+
+bool StratumManager::copyPoolEndpointLocked(int pool, char *host, size_t hostSize, int *port) const
+{
+    if (!host || hostSize == 0 || !port || pool < 0 || pool >= 2 || !m_stratumConfig[pool]) {
+        return false;
+    }
+    const char *configuredHost = m_stratumConfig[pool]->getHost();
+    snprintf(host, hostSize, "%s", configuredHost ? configuredHost : "-");
+    *port = m_stratumConfig[pool]->getPort();
+    return configuredHost != nullptr;
+}
+
+bool StratumManager::copyPoolEndpoint(int pool, char *host, size_t hostSize, int *port)
+{
+    PThreadGuard lock(m_mutex);
+    return copyPoolEndpointLocked(pool, host, hostSize, port);
 }
 
 void StratumManager::loadSettings(bool reconnect)
@@ -560,7 +587,8 @@ void StratumManager::runVerification(int pool)
         // (an unconfigured pool has no host and must not count as "usable")
         bool anyUsable = false;
         for (int i = 0; i < 2; i++) {
-            bool configured = m_stratumConfig[i] && strlen(m_stratumConfig[i]->getHost()) > 0;
+            const char *host = m_stratumConfig[i] ? m_stratumConfig[i]->getHost() : nullptr;
+            bool configured = host && host[0] != '\0';
             if (configured && !isVerifyBlocked(i)) { anyUsable = true; break; }
         }
         if (!anyUsable) {
@@ -587,6 +615,7 @@ void StratumManager::getManagerInfoJson(JsonObject &obj)
 
 void StratumManager::checkForFoundBlock(int pool, double diff, uint32_t nbits)
 {
+    PThreadGuard lock(m_mutex);
     double networkDiff = calculateNetworkDifficulty(nbits);
 /*
     ESP_LOGI(m_tag, "(%s) block check: nonce_diff=%.2e network_diff=%.2e nBits=0x%08lX",
@@ -608,6 +637,9 @@ void StratumManager::checkForFoundBlock(int pool, double diff, uint32_t nbits)
 
 const char *StratumManager::getResolvedIpForPool(int pool) const
 {
+    if (pool < 0 || pool >= 2) {
+        return nullptr;
+    }
     if (!m_stratumTasks[pool]) {
         return nullptr;
     }

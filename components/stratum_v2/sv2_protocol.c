@@ -9,22 +9,15 @@ static const double s_bits192 = 627710173538668076383578942320766641610235544446
 static const double s_bits128 = 340282366920938463463374607431768211456.0;
 static const double s_bits64 = 18446744073709551616.0;
 
+static inline uint64_t read_u64_le(const uint8_t *p);
+
 static double s_le256todouble(const void *target)
 {
-    const uint64_t *data64;
-    double dcut64;
-
-    data64 = (const uint64_t *)((const uint8_t *)target + 24);
-    dcut64 = *data64 * s_bits192;
-
-    data64 = (const uint64_t *)((const uint8_t *)target + 16);
-    dcut64 += *data64 * s_bits128;
-
-    data64 = (const uint64_t *)((const uint8_t *)target + 8);
-    dcut64 += *data64 * s_bits64;
-
-    data64 = (const uint64_t *)((const uint8_t *)target);
-    dcut64 += *data64;
+    const uint8_t *bytes = (const uint8_t *)target;
+    double dcut64 = (double)read_u64_le(bytes + 24) * s_bits192;
+    dcut64 += (double)read_u64_le(bytes + 16) * s_bits128;
+    dcut64 += (double)read_u64_le(bytes + 8) * s_bits64;
+    dcut64 += (double)read_u64_le(bytes);
 
     return dcut64;
 }
@@ -332,6 +325,22 @@ int sv2_parse_set_target(const uint8_t *payload, uint32_t len,
 
     *channel_id = read_u32_le(payload);
     memcpy(max_target, payload + 4, 32);
+    return 0;
+}
+
+int sv2_parse_set_extranonce_prefix(const uint8_t *payload, uint32_t len,
+                                    uint32_t *channel_id, uint8_t prefix[32],
+                                    uint8_t *prefix_len)
+{
+    if (!payload || !channel_id || !prefix || !prefix_len || len < 5) return -1;
+
+    *channel_id = read_u32_le(payload);
+    uint8_t parsed_len = payload[4];
+    if (parsed_len > 32 || len != (uint32_t)(5 + parsed_len)) return -1;
+
+    memset(prefix, 0, 32);
+    if (parsed_len > 0) memcpy(prefix, payload + 5, parsed_len);
+    *prefix_len = parsed_len;
     return 0;
 }
 

@@ -9,8 +9,10 @@ else
   REPO_ROOT="$(cd "$WEB_DIR/../../.." && pwd)"
 fi
 
-VERSION_TAG="${VERSION_TAG:-$(git -C "$REPO_ROOT" describe --tags --abbrev=0 --dirty --always)}"
-COMMIT_HASH="${COMMIT_HASH:-$(git -C "$REPO_ROOT" rev-parse --short HEAD)}"
+VERSION_TAG="${VERSION_TAG:-$(git -C "$REPO_ROOT" describe --tags --abbrev=0 --dirty --always 2>/dev/null || true)}"
+COMMIT_HASH="${COMMIT_HASH:-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || true)}"
+VERSION_TAG="${VERSION_TAG:-local}"
+COMMIT_HASH="${COMMIT_HASH:-local}"
 APP_MODULE="$WEB_DIR/src/app/app.module.ts"
 BACKUP="$(mktemp)"
 

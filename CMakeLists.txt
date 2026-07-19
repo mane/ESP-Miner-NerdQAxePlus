@@ -6,6 +6,14 @@ set(CMAKE_CXX_STANDARD 17)
 
 add_definitions(-DLV_LVGL_H_INCLUDE_SIMPLE)
 
+# ESP-IDF normally derives PROJECT_VER from Git. Docker builds made from a Git
+# worktree may not be able to resolve the worktree's external .git directory,
+# so allow the wrapper/CI to provide the exact release tag explicitly.
+if(DEFINED ENV{VERSION_TAG} AND NOT "$ENV{VERSION_TAG}" STREQUAL "")
+    set(PROJECT_VER "$ENV{VERSION_TAG}")
+    message(STATUS "Project version supplied by VERSION_TAG: ${PROJECT_VER}")
+endif()
+
 # NerdQAxe+ LTS is intentionally single-board.
 # Accept an omitted BOARD for local convenience, but reject every non-NerdQAxe+
 # target so CI/local builds cannot silently produce firmware for other hardware.
@@ -48,4 +56,3 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
 
 project(esp-miner)
-

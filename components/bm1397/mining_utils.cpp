@@ -1,5 +1,6 @@
 #include "mining_utils.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -30,32 +31,38 @@ uint32_t swab32(uint32_t v)
 // takes 80 bytes and flips every 4 bytes
 void flip80bytes(void *dest_p, const void *src_p)
 {
-    uint32_t *dest = (uint32_t*) dest_p;
-    const uint32_t *src = (const uint32_t*) src_p;
-    int i;
-
-    for (i = 0; i < 20; i++)
-        dest[i] = swab32(src[i]);
+    uint8_t *dest = static_cast<uint8_t *>(dest_p);
+    const uint8_t *src = static_cast<const uint8_t *>(src_p);
+    for (int i = 0; i < 20; i++) {
+        uint32_t word;
+        memcpy(&word, src + i * sizeof(word), sizeof(word));
+        word = swab32(word);
+        memcpy(dest + i * sizeof(word), &word, sizeof(word));
+    }
 }
 
 void flip64bytes(void *dest_p, const void *src_p)
 {
-    uint32_t *dest = (uint32_t*) dest_p;
-    const uint32_t *src = (const uint32_t*) src_p;
-    int i;
-
-    for (i = 0; i < 16; i++)
-        dest[i] = swab32(src[i]);
+    uint8_t *dest = static_cast<uint8_t *>(dest_p);
+    const uint8_t *src = static_cast<const uint8_t *>(src_p);
+    for (int i = 0; i < 16; i++) {
+        uint32_t word;
+        memcpy(&word, src + i * sizeof(word), sizeof(word));
+        word = swab32(word);
+        memcpy(dest + i * sizeof(word), &word, sizeof(word));
+    }
 }
 
 void flip32bytes(void *dest_p, const void *src_p)
 {
-    uint32_t *dest = (uint32_t*) dest_p;
-    const uint32_t *src = (const uint32_t*) src_p;
-    int i;
-
-    for (i = 0; i < 8; i++)
-        dest[i] = swab32(src[i]);
+    uint8_t *dest = static_cast<uint8_t *>(dest_p);
+    const uint8_t *src = static_cast<const uint8_t *>(src_p);
+    for (int i = 0; i < 8; i++) {
+        uint32_t word;
+        memcpy(&word, src + i * sizeof(word), sizeof(word));
+        word = swab32(word);
+        memcpy(dest + i * sizeof(word), &word, sizeof(word));
+    }
 }
 
 int hex2char(uint8_t x, char *c)
@@ -73,7 +80,7 @@ int hex2char(uint8_t x, char *c)
 
 size_t bin2hex(const uint8_t *buf, size_t buflen, char *hex, size_t hexlen)
 {
-    if ((hexlen + 1) < buflen * 2) {
+    if (!buf || !hex || buflen > (SIZE_MAX - 1) / 2 || hexlen < buflen * 2 + 1) {
         return 0;
     }
 
@@ -150,28 +157,25 @@ void double_sha256_bin(const uint8_t *data, const size_t data_len, uint8_t hash[
     mbedtls_sha256(first_hash_output, 32, hash, 0);
 }
 
-void swap_endian_words_bin(uint8_t *data, uint8_t *output, size_t data_length)
+void swap_endian_words_bin(const uint8_t *data, uint8_t *output, size_t data_length)
 {
     // Ensure the binary data length is a multiple of 4 bytes (32 bits)
-    if (data_length % 4 != 0) {
+    if (!data || !output || data_length % 4 != 0) {
         fprintf(stderr, "Must be 4-byte word aligned\n");
-        exit(EXIT_FAILURE);
+        return;
     }
 
-    uint32_t *src = (uint32_t *) data;
-    uint32_t *dst = (uint32_t *) output;
     size_t num_words = data_length / 4;
 
     // Iterate over each 4-byte word in the data
     for (size_t i = 0; i < num_words; i++) {
-        // Read the 4-byte word
-        uint32_t word = *src++;
+        uint32_t word;
+        memcpy(&word, data + i * sizeof(word), sizeof(word));
 
         // Swap the endianess by using bitwise operations
         word = (word >> 24) | ((word >> 8) & 0x0000FF00) | ((word << 8) & 0x00FF0000) | (word << 24);
 
-        // Store the swapped word back in the same location
-        *dst++ = word;
+        memcpy(output + i * sizeof(word), &word, sizeof(word));
     }
 }
 
@@ -196,7 +200,10 @@ void swap_endian_words(const char *hex_words, uint8_t *output)
 
 void reverse_bytes(uint8_t *data, size_t len)
 {
-    for (int i = 0; i < len / 2; ++i) {
+    if (!data) {
+        return;
+    }
+    for (size_t i = 0; i < len / 2; ++i) {
         uint8_t temp = data[i];
         data[i] = data[len - 1 - i];
         data[len - 1 - i] = temp;
@@ -211,26 +218,31 @@ static const double bits64 = 18446744073709551616.0;
 /* Converts a little endian 256 bit value to a double */
 double le256todouble(const void *target)
 {
-    uint64_t *data64;
+    const uint8_t *bytes = static_cast<const uint8_t *>(target);
+    uint64_t data64;
     double dcut64;
 
-    data64 = (uint64_t *) (target + 24);
-    dcut64 = *data64 * bits192;
+    memcpy(&data64, bytes + 24, sizeof(data64));
+    dcut64 = data64 * bits192;
 
-    data64 = (uint64_t *) (target + 16);
-    dcut64 += *data64 * bits128;
+    memcpy(&data64, bytes + 16, sizeof(data64));
+    dcut64 += data64 * bits128;
 
-    data64 = (uint64_t *) (target + 8);
-    dcut64 += *data64 * bits64;
+    memcpy(&data64, bytes + 8, sizeof(data64));
+    dcut64 += data64 * bits64;
 
-    data64 = (uint64_t *) (target);
-    dcut64 += *data64;
+    memcpy(&data64, bytes, sizeof(data64));
+    dcut64 += data64;
 
     return dcut64;
 }
 
 void prettyHex(unsigned char *buf, int len)
 {
+    if (!buf || len <= 0) {
+        printf("[]\n");
+        return;
+    }
     int i;
     printf("[");
     for (i = 0; i < len - 1; i++) {

@@ -8,17 +8,45 @@
 
 void free_bm_job(bm_job *job)
 {
+    if (!job) {
+        return;
+    }
     free(job->jobid);
     free(job->extranonce2);
     free(job);
 }
 
-void calculate_merkle_root_hash(const char *coinbase_tx, const uint8_t merkle_branches[][32], const int num_merkle_branches, char merkle_root_hash[65])
+bool calculate_merkle_root_hash(const char *coinbase_tx, const uint8_t merkle_branches[][32], int num_merkle_branches,
+                                char merkle_root_hash[65])
 {
-    size_t coinbase_tx_bin_len = strlen(coinbase_tx) / 2;
-    uint8_t *coinbase_tx_bin = (uint8_t *) MALLOC(coinbase_tx_bin_len);
+    if (!coinbase_tx || !merkle_root_hash || num_merkle_branches < 0 ||
+        num_merkle_branches > MAX_MERKLE_BRANCHES ||
+        (num_merkle_branches > 0 && !merkle_branches)) {
+        return false;
+    }
 
-    hex2bin(coinbase_tx, coinbase_tx_bin, coinbase_tx_bin_len);
+    size_t coinbase_hex_len = strlen(coinbase_tx);
+    if (coinbase_hex_len == 0 || (coinbase_hex_len & 1U) != 0) {
+        return false;
+    }
+    for (size_t i = 0; i < coinbase_hex_len; ++i) {
+        const char c = coinbase_tx[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F'))) {
+            return false;
+        }
+    }
+
+    size_t coinbase_tx_bin_len = coinbase_hex_len / 2;
+    uint8_t *coinbase_tx_bin = (uint8_t *) MALLOC(coinbase_tx_bin_len);
+    if (!coinbase_tx_bin) {
+        return false;
+    }
+
+    if (hex2bin(coinbase_tx, coinbase_tx_bin, coinbase_tx_bin_len) != coinbase_tx_bin_len) {
+        free(coinbase_tx_bin);
+        return false;
+    }
 
     uint8_t both_merkles[64];
     uint8_t new_root[32];
@@ -32,7 +60,7 @@ void calculate_merkle_root_hash(const char *coinbase_tx, const uint8_t merkle_br
         memcpy(both_merkles, new_root, 32);
     }
 
-    bin2hex(both_merkles, 32, merkle_root_hash, 65);
+    return bin2hex(both_merkles, 32, merkle_root_hash, 65) == 64;
 }
 
 // take a mining_notify struct with ascii hex strings and convert it to a bm_job struct
@@ -90,4 +118,3 @@ double test_nonce_value(const bm_job *job, const uint32_t nonce, const uint32_t 
 
     return ds;
 }
-

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include "ArduinoJson.h"
@@ -11,6 +12,7 @@
 #define HASH_SIZE 32
 #define COINBASE_SIZE 100
 #define COINBASE2_SIZE 128
+#define MAX_EXTRANONCE_SIZE 32
 
 typedef enum
 {
@@ -81,6 +83,7 @@ class StratumApi {
     char *m_requestBuffer;
     size_t m_len;   // Current length of valid data in m_buffer.
     int m_send_uid; // Message ID counter (each message gets a unique ID).
+    pthread_mutex_t m_sendMutex = PTHREAD_MUTEX_INITIALIZER;
 
     // Helper: logs a transmit message (removing any trailing newline).
     void debugTx(const char *msg);
@@ -133,8 +136,10 @@ class StratumApi {
     void clearBuffer();
 
     // Parses a received JSON string into a StratumApiV1Message.
-    static bool parse(StratumApiV1Message* message, const char* stratum_json);
-    static bool parse(StratumApiV1Message *message, JsonDocument &doc);
+    static bool parse(StratumApiV1Message *message, const char *stratum_json,
+                      int last_setup_message_id = STRATUM_LAST_SETUP_ID);
+    static bool parse(StratumApiV1Message *message, JsonDocument &doc,
+                      int last_setup_message_id = STRATUM_LAST_SETUP_ID);
 
     // Frees a mining_notify structure allocated in parse().
     static void freeMiningNotify(mining_notify *params);

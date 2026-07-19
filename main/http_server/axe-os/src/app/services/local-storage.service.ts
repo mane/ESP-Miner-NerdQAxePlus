@@ -27,12 +27,17 @@ export class LocalStorageService {
     localStorage.setItem(key, JSON.stringify(value));
   }
 
-  getObject(key: string): any  | null{
+  getObject<T = any>(key: string): T | null {
     const item = localStorage.getItem(key);
-    if(item == null || item.length < 1){
+    if (item == null || item.length < 1) {
       return null;
     }
-    return JSON.parse(item);
+
+    try {
+      return JSON.parse(item) as T;
+    } catch {
+      return null;
+    }
   }
 
   setNumber(key: string, value: number) {
@@ -41,6 +46,11 @@ export class LocalStorageService {
 
   getNumber(key: string): number | null {
     const value = localStorage.getItem(key);
-    return value ? Number(value) : null;
+    if (value === null || value.trim() === '') {
+      return null;
+    }
+
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
   }
 }

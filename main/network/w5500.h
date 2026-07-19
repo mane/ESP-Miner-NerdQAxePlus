@@ -49,8 +49,8 @@ class W5500 {
 
   private:
     static void makeEthMacFromEfuse(uint8_t out_mac[6]);
-    static void setEthMac(esp_eth_handle_t eth_handle, const char *tag);
-    static void hwResetGpio(gpio_num_t rst);
+    static esp_err_t setEthMac(esp_eth_handle_t eth_handle, const char *tag);
+    static esp_err_t hwResetGpio(gpio_num_t rst);
 
     void onLinkUp();
     void onLinkDown();
@@ -72,6 +72,7 @@ class W5500 {
     gpio_num_t m_pinInt = GPIO_NUM_11;
 
     /* State */
+    bool m_prepared = false;
     bool m_inited = false;
     bool m_linkUp = false;
     bool m_hasIp = false;

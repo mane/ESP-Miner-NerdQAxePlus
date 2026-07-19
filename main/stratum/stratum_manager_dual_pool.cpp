@@ -85,22 +85,6 @@ int StratumManagerDualPool::getNextActivePool()
     return PRIMARY;
 }
 
-const char *StratumManagerDualPool::getPoolHost(int pool)
-{
-    if (!m_stratumConfig[pool]) {
-        return "-";
-    }
-    return m_stratumConfig[pool]->getHost();
-}
-
-int StratumManagerDualPool::getPoolPort(int pool)
-{
-    if (!m_stratumConfig[pool]) {
-        return 0;
-    }
-    return m_stratumConfig[pool]->getPort();
-}
-
 uint64_t StratumManagerDualPool::getSharesAccepted(int pool) {
     return m_accepted[pool];
 }

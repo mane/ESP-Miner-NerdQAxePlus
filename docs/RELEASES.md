@@ -25,7 +25,10 @@ It builds only the NerdQAxe+ LTS target and uploads assets to an existing GitHub
 Important behavior:
 
 - The workflow is `workflow_dispatch` only.
-- It computes `VERSION_TAG` with `git describe --tags --abbrev=0`.
+- When dispatched from a tag, it uses that exact tag and verifies that the tag
+  resolves to the checked-out commit.
+- A branch dispatch is stamped `dev-<commit>` and can produce short-lived
+  artifacts, but it is never uploaded to a GitHub release.
 - If a GitHub release for `VERSION_TAG` already exists, it uploads the firmware assets to that release.
 - If the release does not already exist, it only stores short-lived workflow artifacts and skips release upload.
 
@@ -35,10 +38,10 @@ Use a fork-owned tag that is newer than the installed version, for example:
 
 ```bash
 cd /Users/mane/Development/ESP-Miner-NerdQAxePlus
-git checkout develop
-git pull --ff-only origin develop
+git switch lts/nerdqaxeplus-only
+git pull --ff-only origin lts/nerdqaxeplus-only
 
-TAG=v1.1.1-mane.1
+TAG=v1.1.1-mane.6-nqa-lts3
 git tag -a "$TAG" -m "$TAG"
 git push origin "$TAG"
 
@@ -81,5 +84,8 @@ After that, the web UI updater embedded in that image will query `mane/ESP-Miner
 ## Notes
 
 - Do not create/publish a release until the tag, notes, and public naming are intentional.
+- `VERSION_TAG` is forwarded to both ESP-IDF and the versioned Web UI build so
+  their reported versions stay identical. The Docker wrappers derive it from
+  Git automatically; release CI supplies the release tag.
 - The current local machine does not have `idf.py`; the release build should be done via GitHub Actions unless Docker/ESP-IDF is configured locally.
 - If a release is marked as GitHub prerelease, the UI may require enabling prereleases in the update dropdown.

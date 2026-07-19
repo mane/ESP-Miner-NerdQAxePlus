@@ -5,6 +5,7 @@
 #include <cstdlib>
 
 #include "esp_log.h"
+#include "macros.h"
 #include "mining.h"
 
 extern "C" {
@@ -46,7 +47,7 @@ void MiningInfoV2Standard::updateJob(uint32_t job_id, uint32_t version,
 
 bm_job *MiningInfoV2Standard::buildBmJob(uint32_t extranonce_2, int pool_id, uint32_t asic_diff)
 {
-    bm_job *job = (bm_job *)malloc(sizeof(bm_job));
+    bm_job *job = (bm_job *)CALLOC(1, sizeof(bm_job));
     if (!job) return nullptr;
 
     job->version = m_version;
@@ -99,15 +100,19 @@ bm_job *MiningInfoV2Standard::buildBmJob(uint32_t extranonce_2, int pool_id, uin
     //   prev_block_hash_be = swap_endian_words_bin + reverse_bytes
     //     (V1 does memcpy(v1_bin)+reverse. v1_bin = swap(internal). So: swap(internal)+reverse = our transform.)
     memcpy(job->merkle_root, m_merkle_root, 32);
-    swap_endian_words_bin((uint8_t *)m_merkle_root, job->merkle_root_be, 32);
+    swap_endian_words_bin(m_merkle_root, job->merkle_root_be, 32);
     reverse_bytes(job->merkle_root_be, 32);
 
     memcpy(job->prev_block_hash, m_prev_hash, 32);
-    swap_endian_words_bin((uint8_t *)m_prev_hash, job->prev_block_hash_be, 32);
+    swap_endian_words_bin(m_prev_hash, job->prev_block_hash_be, 32);
     reverse_bytes(job->prev_block_hash_be, 32);
 
     job->jobid = strdup(m_jobid_str);
     job->extranonce2 = strdup(""); // unused in SV2 standard channel
+    if (!job->jobid || !job->extranonce2) {
+        free_bm_job(job);
+        return nullptr;
+    }
 
     // Standard Channel: mark as sent, don't resend on timer
     m_jobSent = true;
@@ -162,12 +167,40 @@ MiningInfoV2Extended::~MiningInfoV2Extended()
     free(m_coinbase_suffix);
 }
 
-void MiningInfoV2Extended::updateJob(const sv2_ext_job_t *ext_job,
-                                      const uint8_t *extranonce_prefix,
-                                      uint8_t extranonce_prefix_len,
-                                      uint8_t extranonce_size,
-                                      uint32_t version_mask, uint32_t difficulty)
+bool MiningInfoV2Extended::updateJob(const sv2_ext_job_t *ext_job,
+                                     const uint8_t *extranonce_prefix,
+                                     uint8_t extranonce_prefix_len,
+                                     uint8_t extranonce_size,
+                                     uint32_t version_mask, uint32_t difficulty)
 {
+    constexpr size_t MERKLE_PATH_CAPACITY = sizeof(m_merkle_path) / sizeof(m_merkle_path[0]);
+    if (!ext_job || extranonce_prefix_len > sizeof(m_extranonce_prefix) ||
+        (extranonce_prefix_len > 0 && !extranonce_prefix) ||
+        extranonce_size == 0 || extranonce_size > 32 ||
+        ext_job->merkle_path_count > MERKLE_PATH_CAPACITY ||
+        (ext_job->coinbase_prefix_len > 0 && !ext_job->coinbase_prefix) ||
+        (ext_job->coinbase_suffix_len > 0 && !ext_job->coinbase_suffix)) {
+        return false;
+    }
+
+    uint8_t *new_prefix = nullptr;
+    uint8_t *new_suffix = nullptr;
+    if (ext_job->coinbase_prefix_len > 0) {
+        new_prefix = (uint8_t *)MALLOC(ext_job->coinbase_prefix_len);
+        if (!new_prefix) {
+            return false;
+        }
+        memcpy(new_prefix, ext_job->coinbase_prefix, ext_job->coinbase_prefix_len);
+    }
+    if (ext_job->coinbase_suffix_len > 0) {
+        new_suffix = (uint8_t *)MALLOC(ext_job->coinbase_suffix_len);
+        if (!new_suffix) {
+            free(new_prefix);
+            return false;
+        }
+        memcpy(new_suffix, ext_job->coinbase_suffix, ext_job->coinbase_suffix_len);
+    }
+
     m_job_id = ext_job->job_id;
     m_version = ext_job->version;
     memcpy(m_prev_hash, ext_job->prev_hash, 32);
@@ -177,29 +210,17 @@ void MiningInfoV2Extended::updateJob(const sv2_ext_job_t *ext_job,
     m_difficulty = difficulty;
     snprintf(m_jobid_str, sizeof(m_jobid_str), "%lu", (unsigned long)ext_job->job_id);
 
-    // Copy coinbase components (deep copy)
+    // Commit the deep copies only after all allocations have succeeded.
     free(m_coinbase_prefix);
-    m_coinbase_prefix = nullptr;
-    if (ext_job->coinbase_prefix && ext_job->coinbase_prefix_len > 0) {
-        m_coinbase_prefix = (uint8_t *)malloc(ext_job->coinbase_prefix_len);
-        memcpy(m_coinbase_prefix, ext_job->coinbase_prefix, ext_job->coinbase_prefix_len);
-        m_coinbase_prefix_len = ext_job->coinbase_prefix_len;
-    } else {
-        m_coinbase_prefix_len = 0;
-    }
-
     free(m_coinbase_suffix);
-    m_coinbase_suffix = nullptr;
-    if (ext_job->coinbase_suffix && ext_job->coinbase_suffix_len > 0) {
-        m_coinbase_suffix = (uint8_t *)malloc(ext_job->coinbase_suffix_len);
-        memcpy(m_coinbase_suffix, ext_job->coinbase_suffix, ext_job->coinbase_suffix_len);
-        m_coinbase_suffix_len = ext_job->coinbase_suffix_len;
-    } else {
-        m_coinbase_suffix_len = 0;
-    }
+    m_coinbase_prefix = new_prefix;
+    m_coinbase_suffix = new_suffix;
+    m_coinbase_prefix_len = ext_job->coinbase_prefix_len;
+    m_coinbase_suffix_len = ext_job->coinbase_suffix_len;
 
     // Extranonce info
     m_extranonce_prefix_len = extranonce_prefix_len;
+    memset(m_extranonce_prefix, 0, sizeof(m_extranonce_prefix));
     if (extranonce_prefix_len > 0) {
         memcpy(m_extranonce_prefix, extranonce_prefix, extranonce_prefix_len);
     }
@@ -207,14 +228,20 @@ void MiningInfoV2Extended::updateJob(const sv2_ext_job_t *ext_job,
 
     // Merkle path
     m_merkle_path_count = ext_job->merkle_path_count;
-    if (m_merkle_path_count > 0 && m_merkle_path_count <= 32) {
+    memset(m_merkle_path, 0, sizeof(m_merkle_path));
+    if (m_merkle_path_count > 0) {
         memcpy(m_merkle_path, ext_job->merkle_path, m_merkle_path_count * 32);
     }
+    return true;
 }
 
 bm_job *MiningInfoV2Extended::buildBmJob(uint32_t extranonce_2, int pool_id, uint32_t asic_diff)
 {
-    bm_job *job = (bm_job *)malloc(sizeof(bm_job));
+    if (!isValid() || m_extranonce_size > 32 || m_merkle_path_count < 0 || m_merkle_path_count > 32) {
+        return nullptr;
+    }
+
+    bm_job *job = (bm_job *)CALLOC(1, sizeof(bm_job));
     if (!job) return nullptr;
 
     // Derive extranonce_2 binary from counter (big-endian)
@@ -228,17 +255,29 @@ bm_job *MiningInfoV2Extended::buildBmJob(uint32_t extranonce_2, int pool_id, uin
 
     // Compute coinbase tx hash: double_sha256(prefix + extranonce_prefix + extranonce_2 + suffix)
     size_t coinbase_len = m_coinbase_prefix_len + m_extranonce_prefix_len + m_extranonce_size + m_coinbase_suffix_len;
-    uint8_t *coinbase = (uint8_t *)malloc(coinbase_len);
+    if (coinbase_len == 0) {
+        free(job);
+        return nullptr;
+    }
+    uint8_t *coinbase = (uint8_t *)MALLOC(coinbase_len);
     if (!coinbase) {
         free(job);
         return nullptr;
     }
 
     size_t pos = 0;
-    memcpy(coinbase + pos, m_coinbase_prefix, m_coinbase_prefix_len); pos += m_coinbase_prefix_len;
-    memcpy(coinbase + pos, m_extranonce_prefix, m_extranonce_prefix_len); pos += m_extranonce_prefix_len;
+    if (m_coinbase_prefix_len > 0) {
+        memcpy(coinbase + pos, m_coinbase_prefix, m_coinbase_prefix_len);
+        pos += m_coinbase_prefix_len;
+    }
+    if (m_extranonce_prefix_len > 0) {
+        memcpy(coinbase + pos, m_extranonce_prefix, m_extranonce_prefix_len);
+        pos += m_extranonce_prefix_len;
+    }
     memcpy(coinbase + pos, en2_bin, m_extranonce_size); pos += m_extranonce_size;
-    memcpy(coinbase + pos, m_coinbase_suffix, m_coinbase_suffix_len);
+    if (m_coinbase_suffix_len > 0) {
+        memcpy(coinbase + pos, m_coinbase_suffix, m_coinbase_suffix_len);
+    }
 
     uint8_t coinbase_hash[32];
     double_sha256_bin(coinbase, coinbase_len, coinbase_hash);
@@ -270,22 +309,35 @@ bm_job *MiningInfoV2Extended::buildBmJob(uint32_t extranonce_2, int pool_id, uin
     reverse_bytes(job->merkle_root_be, 32);
 
     memcpy(job->prev_block_hash, m_prev_hash, 32);
-    swap_endian_words_bin((uint8_t *)m_prev_hash, job->prev_block_hash_be, 32);
+    swap_endian_words_bin(m_prev_hash, job->prev_block_hash_be, 32);
     reverse_bytes(job->prev_block_hash_be, 32);
 
     job->jobid = strdup(m_jobid_str);
 
     // Store extranonce_2 as hex for share submission
     char en2_hex[65];
-    bin2hex(en2_bin, m_extranonce_size, en2_hex, sizeof(en2_hex));
+    if (bin2hex(en2_bin, m_extranonce_size, en2_hex, sizeof(en2_hex)) == 0) {
+        free_bm_job(job);
+        return nullptr;
+    }
     job->extranonce2 = strdup(en2_hex);
+    if (!job->jobid || !job->extranonce2) {
+        free_bm_job(job);
+        return nullptr;
+    }
 
     return job;
 }
 
 void MiningInfoV2Extended::setDifficulty(uint32_t difficulty) { m_difficulty = difficulty; }
 
-bool MiningInfoV2Extended::isValid() const { return m_ntime != 0; }
+bool MiningInfoV2Extended::isValid() const
+{
+    return m_ntime != 0 && m_extranonce_size > 0 && m_extranonce_size <= 32 &&
+           m_merkle_path_count >= 0 && m_merkle_path_count <= 32 &&
+           (m_coinbase_prefix_len == 0 || m_coinbase_prefix) &&
+           (m_coinbase_suffix_len == 0 || m_coinbase_suffix);
+}
 
 bool MiningInfoV2Extended::isNewWork(uint32_t &last_ntime) const
 {

@@ -10,16 +10,21 @@
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
+#include "esp_spiffs.h"
 
 #include "global_state.h"
 
 #include "guards.h"
+#include "handler_file.h"
+#include "handler_ota.h"
 #include "http_cors.h"
 #include "http_utils.h"
 #include "macros.h"
 #include "psram_allocator.h"
 
 #define GITHUB_RELEASE_DOWNLOAD_PREFIX "https://github.com/mane/ESP-Miner-NerdQAxePlus/releases/download/"
+#define GITHUB_RELEASE_ASSET_PREFIX "https://release-assets.githubusercontent.com/"
+#define FACTORY_ASSET_NAME_PREFIX "esp-miner-factory-NerdQAxePlus-LTS-"
 
 #define FW_START 0x10000
 #define FW_LEN_MB 4
@@ -28,6 +33,9 @@
 #define WWW_START 0x410000
 #define WWW_LEN_MB 3
 #define WWW_LEN_BYTES (WWW_LEN_MB * 1024 * 1024)
+
+// merge_bin output ends after the 8 KiB ota_data_initial image at 0xf10000.
+#define FACTORY_IMAGE_SIZE 0xf12000
 
 #define CHUNK_SIZE 2048
 #define URL_SIZE 4096 // make this big to avoid truncation
@@ -41,6 +49,28 @@
     } while (0)
 
 static const char *TAG = "http_ota";
+
+extern bool enter_recovery;
+
+static bool is_safe_github_url(const char *url);
+
+static bool is_safe_redirect_url(const char *url)
+{
+    if (!url)
+        return false;
+    if (is_safe_github_url(url))
+        return true;
+    if (strncasecmp(url, GITHUB_RELEASE_ASSET_PREFIX, strlen(GITHUB_RELEASE_ASSET_PREFIX)) != 0)
+        return false;
+    if (strchr(url, '\\') || strstr(url, "../") || strstr(url, "/..") || strstr(url, "%2e%2e") || strstr(url, "%2E%2E"))
+        return false;
+    for (const char *p = url; *p; ++p) {
+        const unsigned char c = (unsigned char) *p;
+        if (c < 0x20 || c == 0x7f)
+            return false;
+    }
+    return true;
+}
 
 // --- HTTP event: capture Location header when requested (per-client via user_data)
 esp_err_t http_evt_capture_location(esp_http_client_event_t *evt)
@@ -119,7 +149,15 @@ esp_err_t FactoryOTAUpdate::follow_redirect(esp_http_client_handle_t client, cha
 {
     const int max_hops = 8;
     for (int hop = 0; hop < max_hops; ++hop) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_http_client_set_url(client, url));
+        if (!is_safe_redirect_url(url)) {
+            ESP_LOGE(TAG, "unsafe OTA redirect target rejected");
+            return ESP_ERR_INVALID_ARG;
+        }
+        esp_err_t set_url_err = esp_http_client_set_url(client, url);
+        if (set_url_err != ESP_OK) {
+            ESP_LOGE(TAG, "set URL failed: %s", esp_err_to_name(set_url_err));
+            return set_url_err;
+        }
 
         ctx->loc[0] = '\0';
         ctx->capture = true;
@@ -141,7 +179,12 @@ esp_err_t FactoryOTAUpdate::follow_redirect(esp_http_client_handle_t client, cha
                 esp_http_client_close(client);
                 return ESP_ERR_INVALID_RESPONSE;
             }
-            // GitHub/codeload send absolute URLs in Location -> just copy
+            if (strlen(ctx->loc) >= (size_t) url_len || !is_safe_redirect_url(ctx->loc)) {
+                ESP_LOGE(TAG, "unsafe or overlong redirect rejected");
+                esp_http_client_close(client);
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+            // GitHub release assets use absolute HTTPS redirect URLs.
             strlcpy(url, ctx->loc, (size_t) url_len);
 
             esp_http_client_close(client);
@@ -177,14 +220,22 @@ esp_err_t FactoryOTAUpdate::do_www_update(uint8_t *data)
         return ESP_ERR_NOT_FOUND;
     }
 
-    // Ensure image fits into partition
-    if (WWW_LEN_BYTES > www_partition->size) {
-        ESP_LOGE(TAG, "WWW image larger than partition (%u > %u)", (unsigned) WWW_LEN_BYTES, (unsigned) www_partition->size);
+    // The factory layout and updater slice must stay exactly aligned.
+    if (WWW_LEN_BYTES != www_partition->size) {
+        ESP_LOGE(TAG, "WWW image/partition size mismatch (%u != %u)", (unsigned) WWW_LEN_BYTES, (unsigned) www_partition->size);
         return ESP_ERR_INVALID_SIZE;
     }
     const uint32_t to_write = WWW_LEN_BYTES;
 
-    // Erase the entire www partition before writing
+    if (!enter_recovery) {
+        esp_err_t unmount_err = esp_vfs_spiffs_unregister(NULL);
+        if (unmount_err != ESP_OK) {
+            ESP_LOGE(TAG, "WWW filesystem unmount failed: %s", esp_err_to_name(unmount_err));
+            return unmount_err;
+        }
+    }
+
+    // Erase the entire WWW partition only after its replacement is buffered.
     ESP_LOGI(TAG, "erasing www partition ...");
     esp_err_t err = esp_partition_erase_range(www_partition, 0, www_partition->size);
     if (err != ESP_OK) {
@@ -199,21 +250,32 @@ esp_err_t FactoryOTAUpdate::do_www_update(uint8_t *data)
 
         // print each 64kb
         if (!(offset & 0xffff)) {
-            ESP_LOGI(TAG, "flashing to %08lx", offset);
+            ESP_LOGI(TAG, "flashing to %08x", (unsigned) offset);
         }
         if (esp_partition_write(www_partition, offset, (const void *) buf, CHUNK_SIZE) != ESP_OK) {
             return ESP_FAIL;
         }
         addWwwBytes(CHUNK_SIZE);
     }
+
+    if (init_fs() != ESP_OK) {
+        enter_recovery = true;
+        ESP_LOGE(TAG, "updated WWW image failed to mount");
+        return ESP_FAIL;
+    }
+    enter_recovery = false;
     return ESP_OK;
 }
 
 /*
  * Handle OTA file upload
  */
-esp_err_t FactoryOTAUpdate::do_firmware_update(esp_http_client_handle_t client)
+esp_err_t FactoryOTAUpdate::do_firmware_update(esp_http_client_handle_t client, const uint8_t *prefix, size_t prefix_len)
 {
+    if (!prefix || prefix_len != ota_firmware_prefix_size() || prefix_len >= FW_LEN_BYTES) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     // use internal RAM for temp buffer
     uint8_t *buf = (uint8_t *) malloc(CHUNK_SIZE);
     CHECK_ALLOC(buf);
@@ -228,14 +290,24 @@ esp_err_t FactoryOTAUpdate::do_firmware_update(esp_http_client_handle_t client)
         return ESP_ERR_NOT_FOUND;
     }
 
-    esp_err_t err = esp_ota_begin(ota_partition, OTA_SIZE_UNKNOWN, &ota_handle);
+    esp_err_t err = esp_ota_begin(ota_partition, FW_LEN_BYTES, &ota_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
         return err;
     }
 
-    for (uint32_t offset = 0; offset < FW_LEN_BYTES; offset += CHUNK_SIZE) {
-        err = http_read_chunk(client, buf);
+    err = esp_ota_write(ota_handle, prefix, prefix_len);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "initial esp_ota_write failed: %s", esp_err_to_name(err));
+        esp_ota_abort(ota_handle);
+        return err;
+    }
+    addFwBytes(static_cast<uint32_t>(prefix_len));
+
+    for (size_t offset = prefix_len; offset < FW_LEN_BYTES;) {
+        const size_t remaining = FW_LEN_BYTES - offset;
+        const size_t to_read = remaining < CHUNK_SIZE ? remaining : CHUNK_SIZE;
+        err = http_read_exact(client, buf, static_cast<int>(to_read));
         if (err != ESP_OK) {
             // ensure abort on any read error
             esp_ota_abort(ota_handle);
@@ -244,28 +316,24 @@ esp_err_t FactoryOTAUpdate::do_firmware_update(esp_http_client_handle_t client)
 
         // print each 64kb
         if (!(offset & 0xffff)) {
-            ESP_LOGI(TAG, "flashing to %08lx", offset);
+            ESP_LOGI(TAG, "flashing to %08x", (unsigned) offset);
         }
 
-        err = esp_ota_write(ota_handle, (const void *) buf, CHUNK_SIZE);
+        err = esp_ota_write(ota_handle, (const void *) buf, to_read);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(err));
             esp_ota_abort(ota_handle);
             return err;
         }
-        addFwBytes(CHUNK_SIZE);
+        addFwBytes(static_cast<uint32_t>(to_read));
+        offset += to_read;
     }
 
-    // Validate and switch to new OTA image and reboot later
+    // Validate the inactive image. Activation is intentionally deferred until
+    // the matching WWW image has also been written and mounted successfully.
     err = esp_ota_end(ota_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    err = esp_ota_set_boot_partition(ota_partition);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
         return err;
     }
 
@@ -295,19 +363,17 @@ esp_err_t FactoryOTAUpdate::ota_update_from_factory(const char *start_url, bool 
     // use PSRAM for the long URL and WWW buffer
     char *url = (char *) MALLOC(URL_SIZE);
     CHECK_ALLOC(url);
+    MemoryGuard gcUrl(url);
 
     // PSRAM
     uint8_t *wwwData = (uint8_t *) MALLOC(WWW_LEN_BYTES);
     CHECK_ALLOC(wwwData);
+    MemoryGuard gcwwwData(wwwData);
 
     // calloc initializes with 0
     // PSRAM
     redirect_ctx_t *redir_ctx = (redirect_ctx_t *) CALLOC(1, sizeof(redirect_ctx_t));
     CHECK_ALLOC(redir_ctx);
-
-    // release memory when out of scope
-    MemoryGuard gcUrl(url);
-    MemoryGuard gcwwwData(wwwData);
     MemoryGuard gcCtx(redir_ctx);
 
     strlcpy(url, start_url, URL_SIZE);
@@ -355,10 +421,10 @@ esp_err_t FactoryOTAUpdate::ota_update_from_factory(const char *start_url, bool 
     int64_t clen = esp_http_client_get_content_length(client);
     ESP_LOGI(TAG, "Final URL OK. Content-Length=%lld", (long long) clen);
 
-    // Soft check: allow unknown (-1) or ensure at least FW+WWW bytes available.
-    const int64_t min_needed = (int64_t) FW_START + (int64_t) FW_LEN_BYTES + (int64_t) WWW_LEN_BYTES;
-    if (clen != -1 && clen < min_needed) {
-        ESP_LOGE(TAG, "factory image too small: %lld < %lld", (long long) clen, (long long) min_needed);
+    // GitHub release assets provide Content-Length. Require the exact merge_bin
+    // output so a different layout cannot be sliced into the live partitions.
+    if (clen != FACTORY_IMAGE_SIZE) {
+        ESP_LOGE(TAG, "unexpected factory image size: %lld != %u", (long long) clen, (unsigned) FACTORY_IMAGE_SIZE);
         setStep(OtaStep::ERROR, "OTA: error");
         return ESP_ERR_INVALID_SIZE;
     }
@@ -369,6 +435,23 @@ esp_err_t FactoryOTAUpdate::ota_update_from_factory(const char *start_url, bool 
         ESP_LOGE(TAG, "error reading stream");
         setStep(OtaStep::ERROR, "OTA: error");
         return err;
+    }
+
+    // Authenticate the image identity while the current firmware, filesystem,
+    // and power-management loop are still fully operational. The bytes are
+    // passed into do_firmware_update(), so the streamed image remains exact.
+    const size_t firmware_prefix_len = ota_firmware_prefix_size();
+    uint8_t *firmware_prefix = static_cast<uint8_t *>(malloc(firmware_prefix_len));
+    if (!firmware_prefix) {
+        setStep(OtaStep::ERROR, "OTA: error");
+        return ESP_ERR_NO_MEM;
+    }
+    MemoryGuard gcFirmwarePrefix(firmware_prefix);
+    err = http_read_exact(client, firmware_prefix, static_cast<int>(firmware_prefix_len));
+    if (err != ESP_OK || !validate_nerdqaxeplus_firmware_prefix(firmware_prefix, firmware_prefix_len)) {
+        ESP_LOGE(TAG, "factory firmware identity validation failed");
+        setStep(OtaStep::ERROR, "OTA: incompatible firmware");
+        return err == ESP_OK ? ESP_ERR_INVALID_VERSION : err;
     }
 
     {
@@ -385,11 +468,13 @@ esp_err_t FactoryOTAUpdate::ota_update_from_factory(const char *start_url, bool 
 
         setStep(OtaStep::UPDATING_FW, "OTA: updating firmware");
 
-        err = do_firmware_update(client);
+        err = do_firmware_update(client, firmware_prefix, firmware_prefix_len);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "firmware update failed");
             setStep(OtaStep::ERROR, "OTA: error");
-            return err;
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            POWER_MANAGEMENT_MODULE.restart();
+            return err; // unreachable; old app remains selected
         }
         ESP_LOGI(TAG, "firmware update successful!");
 
@@ -403,8 +488,10 @@ esp_err_t FactoryOTAUpdate::ota_update_from_factory(const char *start_url, bool 
             esp_err_t e = http_read_chunk(client, &wwwData[i * CHUNK_SIZE]);
             if (e != ESP_OK) {
                 ESP_LOGE(TAG, "error reading www binary");
+                setStep(OtaStep::ERROR, "OTA: error");
+                vTaskDelay(pdMS_TO_TICKS(2000));
                 POWER_MANAGEMENT_MODULE.restart();
-                return e;
+                return e; // unreachable; old app remains selected
             }
             addWwwRecvBytes(CHUNK_SIZE);
         }
@@ -416,11 +503,32 @@ esp_err_t FactoryOTAUpdate::ota_update_from_factory(const char *start_url, bool 
         err = do_www_update(wwwData);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "www update failed");
-            // Firmware already switched; ensure deterministic state by rebooting
+            setStep(OtaStep::ERROR, "OTA: error");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            POWER_MANAGEMENT_MODULE.restart();
+            return err; // unreachable; old app remains selected
+        }
+        ESP_LOGI(TAG, "www update successful!");
+
+        // Activate only after both firmware and WWW have been validated. Since
+        // the running partition has not changed, round-robin resolves the same
+        // inactive slot that do_firmware_update() just wrote.
+        const esp_partition_t *ota_partition = esp_ota_get_next_update_partition(NULL);
+        if (!ota_partition) {
+            ESP_LOGE(TAG, "OTA activation partition not found");
+            setStep(OtaStep::ERROR, "OTA: error");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            POWER_MANAGEMENT_MODULE.restart();
+            return ESP_ERR_NOT_FOUND;
+        }
+        err = esp_ota_set_boot_partition(ota_partition);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
+            setStep(OtaStep::ERROR, "OTA: error");
+            vTaskDelay(pdMS_TO_TICKS(2000));
             POWER_MANAGEMENT_MODULE.restart();
             return err;
         }
-        ESP_LOGI(TAG, "www update successful!");
 
         if (!keep_config) {
             setStep(OtaStep::ERASING_NVS, "OTA: erasing NVS (reset to factory defaults)");
@@ -524,6 +632,27 @@ static bool is_safe_github_url(const char *url)
     if (strncasecmp(url, GITHUB_RELEASE_DOWNLOAD_PREFIX, strlen(GITHUB_RELEASE_DOWNLOAD_PREFIX)) != 0)
         return false;
 
+    // Bind the one-click updater to the release artifact for this exact board
+    // and LTS channel. Query strings/fragments could obscure the final basename.
+    const char *release_path = url + strlen(GITHUB_RELEASE_DOWNLOAD_PREFIX);
+    if (strchr(release_path, '?') || strchr(release_path, '#') || strchr(release_path, '%'))
+        return false;
+    const char *asset_name = strchr(release_path, '/');
+    if (!asset_name || asset_name == release_path || asset_name[1] == '\0')
+        return false;
+    ++asset_name;
+    if (strchr(asset_name, '/'))
+        return false;
+    if (strncmp(asset_name, FACTORY_ASSET_NAME_PREFIX, strlen(FACTORY_ASSET_NAME_PREFIX)) != 0)
+        return false;
+    const size_t asset_len = strlen(asset_name);
+    const size_t name_prefix_len = strlen(FACTORY_ASSET_NAME_PREFIX);
+    static const char bin_suffix[] = ".bin";
+    if (asset_len <= name_prefix_len + sizeof(bin_suffix) - 1 ||
+        strcmp(asset_name + asset_len - (sizeof(bin_suffix) - 1), bin_suffix) != 0) {
+        return false;
+    }
+
     // Reject traversal and encoded traversal
     if (strstr(url, "../") || strstr(url, "/..") || strstr(url, "%2e%2e") || strstr(url, "%2E%2E"))
         return false;
@@ -581,6 +710,7 @@ void FactoryOTAUpdate::resetProgress()
     pthread_mutex_lock(&m_mutex);
     m_fw_written = 0;
     m_www_written = 0;
+    m_www_recv = 0;
     m_step = OtaStep::IDLE;
     pthread_mutex_unlock(&m_mutex);
 }
@@ -744,6 +874,15 @@ esp_err_t GET_OTA_status(httpd_req_t *req)
 {
     // close connection when out of scope
     ConGuard g(http_server, req);
+
+    if (is_network_allowed(req) != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Unauthorized");
+    }
+
+    if (set_cors_headers(req) != ESP_OK) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
 
     httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate");
 

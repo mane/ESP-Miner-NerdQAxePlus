@@ -8,6 +8,7 @@
     "build": "bash scripts/build-versioned.sh",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
+    "test:build-tools": "node --test only-gzip.spec.js",
     "bundle-report": "ng build --configuration=production --stats-json && webpack-bundle-analyzer dist/axe-os/stats.json"
   },
   "private": true,

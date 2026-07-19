@@ -1,4 +1,5 @@
 #pragma once
+#include <stddef.h>
 #include <pthread.h>
 
 #include "freertos/FreeRTOS.h"
@@ -82,6 +83,7 @@ class StratumManager {
     }
 
     void copyConfigInto(int pool, StratumConfig *dst);
+    bool copyPoolEndpointLocked(int pool, char *host, size_t hostSize, int *port) const;
 
     // Helper methods for connection management
     void connect(int index);     ///< Connect to a specified pool (0 = primary, 1 = secondary)
@@ -152,6 +154,10 @@ class StratumManager {
 
     // abstract
     virtual const char *getResolvedIpForPool(int pool) const;
+
+    // Copies both values while m_mutex is held; callers never retain pointers
+    // into reloadable StratumConfig storage.
+    bool copyPoolEndpoint(int pool, char *host, size_t hostSize, int *port);
 
     virtual int getNextActivePool() = 0;
 

@@ -13,8 +13,13 @@
 
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_timer.h"
 #include "lwip/sockets.h"
+#include <ctype.h>
 #include <errno.h>
+#include <limits.h>
+#include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,10 +30,146 @@
 // The logging tag for ESP logging.
 static const char *TAG = "stratum_api";
 
+static bool isHexString(const char *value, size_t exact_length = 0, size_t max_length = SIZE_MAX)
+{
+    if (!value) {
+        return false;
+    }
+
+    size_t len = strlen(value);
+    if ((exact_length && len != exact_length) || len > max_length || (len & 1U) != 0) {
+        return false;
+    }
+
+    for (size_t i = 0; i < len; i++) {
+        if (!isxdigit(static_cast<unsigned char>(value[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool parseHexUint32(const char *value, uint32_t *out)
+{
+    if (!out || !value) {
+        return false;
+    }
+
+    size_t len = strlen(value);
+    if (len == 0 || len > 8) {
+        return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        if (!isxdigit(static_cast<unsigned char>(value[i]))) {
+            return false;
+        }
+    }
+
+    char *end = nullptr;
+    unsigned long parsed = strtoul(value, &end, 16);
+    if (!end || *end != '\0' || parsed > UINT32_MAX) {
+        return false;
+    }
+    *out = static_cast<uint32_t>(parsed);
+    return true;
+}
+
+static bool appendBytes(char *buffer, size_t capacity, size_t *length,
+                        const char *data, size_t data_length)
+{
+    if (!buffer || !length || !data || *length >= capacity ||
+        data_length >= capacity - *length) {
+        return false;
+    }
+    memcpy(buffer + *length, data, data_length);
+    *length += data_length;
+    buffer[*length] = '\0';
+    return true;
+}
+
+static bool appendLiteral(char *buffer, size_t capacity, size_t *length,
+                          const char *literal)
+{
+    return literal && appendBytes(buffer, capacity, length, literal, strlen(literal));
+}
+
+static bool appendFormatted(char *buffer, size_t capacity, size_t *length,
+                            const char *format, ...)
+{
+    if (!buffer || !length || !format || *length >= capacity) {
+        return false;
+    }
+
+    va_list args;
+    va_start(args, format);
+    int written = vsnprintf(buffer + *length, capacity - *length, format, args);
+    va_end(args);
+    if (written < 0 || static_cast<size_t>(written) >= capacity - *length) {
+        buffer[capacity - 1] = '\0';
+        return false;
+    }
+    *length += static_cast<size_t>(written);
+    return true;
+}
+
+static bool appendJsonEscapedContent(char *buffer, size_t capacity, size_t *length,
+                                     const char *value)
+{
+    if (!value) {
+        return false;
+    }
+
+    static const char hex[] = "0123456789abcdef";
+    for (const unsigned char *p = reinterpret_cast<const unsigned char *>(value); *p; ++p) {
+        const char *escape = nullptr;
+        switch (*p) {
+        case '"': escape = "\\\""; break;
+        case '\\': escape = "\\\\"; break;
+        case '\b': escape = "\\b"; break;
+        case '\f': escape = "\\f"; break;
+        case '\n': escape = "\\n"; break;
+        case '\r': escape = "\\r"; break;
+        case '\t': escape = "\\t"; break;
+        default: break;
+        }
+
+        if (escape) {
+            if (!appendLiteral(buffer, capacity, length, escape)) {
+                return false;
+            }
+        } else if (*p < 0x20) {
+            char unicode_escape[7] = {'\\', 'u', '0', '0', hex[*p >> 4], hex[*p & 0x0f], '\0'};
+            if (!appendLiteral(buffer, capacity, length, unicode_escape)) {
+                return false;
+            }
+        } else {
+            char c = static_cast<char>(*p);
+            if (!appendBytes(buffer, capacity, length, &c, 1)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static bool appendJsonString(char *buffer, size_t capacity, size_t *length,
+                             const char *value)
+{
+    return appendLiteral(buffer, capacity, length, "\"") &&
+           appendJsonEscapedContent(buffer, capacity, length, value) &&
+           appendLiteral(buffer, capacity, length, "\"");
+}
+
 StratumApi::StratumApi() : m_len(0), m_send_uid(1)
 {
     m_buffer = (char *) MALLOC(BIG_BUFFER_SIZE);
     m_requestBuffer = (char *) MALLOC(BUFFER_SIZE);
+    if (!m_buffer || !m_requestBuffer) {
+        ESP_LOGE(TAG, "Failed to allocate Stratum buffers");
+        safe_free(m_buffer);
+        safe_free(m_requestBuffer);
+        return;
+    }
     clearBuffer();
 }
 
@@ -67,6 +208,10 @@ size_t StratumApi::hex2bin(const char *hex, uint8_t *bin, size_t bin_len)
 
 void StratumApi::debugTx(const char *msg)
 {
+    if (strstr(msg, "\"method\": \"mining.authorize\"") != nullptr) {
+        ESP_LOGI(TAG, "tx: mining.authorize (credentials redacted)");
+        return;
+    }
     const char *newline = strchr(msg, '\n');
     if (newline != NULL) {
         ESP_LOGI(TAG, "tx: %.*s", (int) (newline - msg), msg);
@@ -84,7 +229,9 @@ void StratumApi::debugTx(const char *msg)
 void StratumApi::resetBuffer()
 {
     m_len = 0;
-    m_buffer[0] = '\0';
+    if (m_buffer) {
+        m_buffer[0] = '\0';
+    }
 }
 
 char *StratumApi::receiveJsonRpcLine(StratumTransport *transport)
@@ -92,6 +239,11 @@ char *StratumApi::receiveJsonRpcLine(StratumTransport *transport)
     // This function blocks until either:
     // - a full line (terminated by '\n') is available and returned, or
     // - an error/EOF occurs and NULL is returned.
+
+    if (!transport || !m_buffer) {
+        ESP_LOGE(TAG, "Stratum receive buffer is unavailable");
+        return nullptr;
+    }
 
     for (;;) {
         // Check if we already have a complete line in the buffer.
@@ -197,45 +349,104 @@ bool StratumApi::parseMethods(JsonDocument &doc, const char *method_str, Stratum
     switch (message->method) {
     case MINING_NOTIFY: {
         ESP_LOGI(TAG, "mining notify");
-        mining_notify *new_work = (mining_notify *) MALLOC(sizeof(mining_notify));
-
         JsonArray params = doc["params"].as<JsonArray>();
+        if (params.isNull() || params.size() < 9) {
+            ESP_LOGE(TAG, "Invalid mining.notify parameter count");
+            return false;
+        }
 
-        new_work->job_id = strdup(params[0].as<const char *>());
-        hex2bin(params[1].as<const char *>(), new_work->_prev_block_hash, HASH_SIZE);
+        const char *job_id = params[0].as<const char *>();
+        const char *prev_block_hash = params[1].as<const char *>();
+        const char *coinbase_1 = params[2].as<const char *>();
+        const char *coinbase_2 = params[3].as<const char *>();
+        const char *version = params[5].as<const char *>();
+        const char *target = params[6].as<const char *>();
+        const char *ntime = params[7].as<const char *>();
 
-        new_work->coinbase_1 = strdup(params[2].as<const char *>());
-        new_work->coinbase_2 = strdup(params[3].as<const char *>());
+        // Empty coinbase fragments are valid Stratum components. Their final
+        // concatenation is checked before hashing.
+        if (!job_id || !isHexString(prev_block_hash, HASH_SIZE * 2) ||
+            !isHexString(coinbase_1) || !isHexString(coinbase_2)) {
+            ESP_LOGE(TAG, "Invalid mining.notify string or hash field");
+            return false;
+        }
+
+        uint32_t parsed_version = 0;
+        uint32_t parsed_target = 0;
+        uint32_t parsed_ntime = 0;
+        if (!parseHexUint32(version, &parsed_version) ||
+            !parseHexUint32(target, &parsed_target) ||
+            !parseHexUint32(ntime, &parsed_ntime)) {
+            ESP_LOGE(TAG, "Invalid mining.notify numeric field");
+            return false;
+        }
 
         JsonArray merkle_branch = params[4].as<JsonArray>();
-        new_work->n_merkle_branches = merkle_branch.size();
-        if (new_work->n_merkle_branches > MAX_MERKLE_BRANCHES) {
-            ESP_LOGE(TAG, "Too many Merkle branches.");
+        if (merkle_branch.isNull() || merkle_branch.size() > MAX_MERKLE_BRANCHES) {
+            ESP_LOGE(TAG, "Invalid number of Merkle branches");
+            return false;
+        }
+
+        mining_notify *new_work = (mining_notify *) CALLOC(1, sizeof(mining_notify));
+        if (!new_work) {
+            ESP_LOGE(TAG, "Failed to allocate mining.notify");
+            return false;
+        }
+
+        new_work->job_id = strdup(job_id);
+        new_work->coinbase_1 = strdup(coinbase_1);
+        new_work->coinbase_2 = strdup(coinbase_2);
+        if (!new_work->job_id || !new_work->coinbase_1 || !new_work->coinbase_2) {
+            ESP_LOGE(TAG, "Failed to copy mining.notify strings");
             freeMiningNotify(new_work);
             safe_free(new_work);
             return false;
         }
 
+        hex2bin(prev_block_hash, new_work->_prev_block_hash, HASH_SIZE);
+        new_work->n_merkle_branches = merkle_branch.size();
+
         for (size_t i = 0; i < new_work->n_merkle_branches; i++) {
-            hex2bin(merkle_branch[i].as<const char *>(), new_work->_merkle_branches[i], HASH_SIZE);
+            const char *branch = merkle_branch[i].as<const char *>();
+            if (!isHexString(branch, HASH_SIZE * 2)) {
+                ESP_LOGE(TAG, "Invalid Merkle branch at index %zu", i);
+                freeMiningNotify(new_work);
+                safe_free(new_work);
+                return false;
+            }
+            hex2bin(branch, new_work->_merkle_branches[i], HASH_SIZE);
         }
 
-        new_work->version = strtoul(params[5].as<const char *>(), NULL, 16);
-        new_work->target = strtoul(params[6].as<const char *>(), NULL, 16);
-        new_work->ntime = strtoul(params[7].as<const char *>(), NULL, 16);
+        new_work->version = parsed_version;
+        new_work->target = parsed_target;
+        new_work->ntime = parsed_ntime;
 
         message->mining_notification = new_work;
-
-        int paramsLength = params.size();
-        message->should_abandon_work = params[paramsLength - 1].as<bool>();
+        message->should_abandon_work = params[8].as<bool>();
         break;
     }
-    case MINING_SET_DIFFICULTY:
-        message->new_difficulty = doc["params"][0].as<uint32_t>();
+    case MINING_SET_DIFFICULTY: {
+        JsonVariant difficulty_value = doc["params"][0];
+        if (!difficulty_value.is<float>() && !difficulty_value.is<double>() &&
+            !difficulty_value.is<uint32_t>()) {
+            ESP_LOGE(TAG, "Invalid mining difficulty");
+            return false;
+        }
+        double difficulty = difficulty_value.as<double>();
+        if (!isfinite(difficulty) || difficulty < 1.0 || difficulty > UINT32_MAX) {
+            ESP_LOGE(TAG, "Mining difficulty out of range");
+            return false;
+        }
+        message->new_difficulty = static_cast<uint32_t>(difficulty);
         break;
-    case MINING_SET_VERSION_MASK:
-        message->version_mask = strtoul(doc["params"][0].as<const char *>(), NULL, 16);
+    }
+    case MINING_SET_VERSION_MASK: {
+        if (!parseHexUint32(doc["params"][0].as<const char *>(), &message->version_mask)) {
+            ESP_LOGE(TAG, "Invalid version rolling mask");
+            return false;
+        }
         break;
+    }
     case MINING_SET_EXTRANONCE: {
         ESP_LOGI(TAG, "mining.set_extranonce");
 
@@ -247,14 +458,22 @@ bool StratumApi::parseMethods(JsonDocument &doc, const char *method_str, Stratum
             ESP_LOGE(TAG, "Invalid result array for subscribe.");
             return false;
         }
-        message->extranonce_2_len = params[1].as<int>();
+        int extranonce_2_len = params[1].as<int>();
 
         const char *extranonce_str = params[0].as<const char *>();
-        if (!extranonce_str) {
-            ESP_LOGE(TAG, "extranonce is null");
+        // An empty extranonce1 prefix is valid; extranonce2 still has a
+        // mandatory positive size.
+        if (!isHexString(extranonce_str, 0, MAX_EXTRANONCE_SIZE * 2) ||
+            extranonce_2_len <= 0 || extranonce_2_len > MAX_EXTRANONCE_SIZE) {
+            ESP_LOGE(TAG, "Invalid extranonce parameters");
             return false;
         }
+        message->extranonce_2_len = extranonce_2_len;
         message->extranonce_str = strdup(extranonce_str);
+        if (!message->extranonce_str) {
+            ESP_LOGE(TAG, "Failed to copy extranonce");
+            return false;
+        }
 
         ESP_LOGI(TAG, "extranonce_str: %s", message->extranonce_str);
         ESP_LOGI(TAG, "extranonce_2_len: %d", message->extranonce_2_len);
@@ -306,14 +525,20 @@ bool StratumApi::parseSetupResponses(JsonDocument &doc, StratumApiV1Message *mes
             ESP_LOGE(TAG, "Invalid result array for subscribe.");
             return false;
         }
-        message->extranonce_2_len = result_arr[2].as<int>();
+        int extranonce_2_len = result_arr[2].as<int>();
 
         const char *extranonce_str = result_arr[1].as<const char *>();
-        if (!extranonce_str) {
-            ESP_LOGE(TAG, "extranonce is null");
+        if (!isHexString(extranonce_str, 0, MAX_EXTRANONCE_SIZE * 2) ||
+            extranonce_2_len <= 0 || extranonce_2_len > MAX_EXTRANONCE_SIZE) {
+            ESP_LOGE(TAG, "Invalid subscribe extranonce parameters");
             return false;
         }
+        message->extranonce_2_len = extranonce_2_len;
         message->extranonce_str = strdup(extranonce_str);
+        if (!message->extranonce_str) {
+            ESP_LOGE(TAG, "Failed to copy subscribe extranonce");
+            return false;
+        }
 
         ESP_LOGI(TAG, "extranonce_str: %s", message->extranonce_str);
         ESP_LOGI(TAG, "extranonce_2_len: %d", message->extranonce_2_len);
@@ -323,10 +548,10 @@ bool StratumApi::parseSetupResponses(JsonDocument &doc, StratumApiV1Message *mes
         message->method = STRATUM_RESULT_VERSION_MASK;
 
         const char *mask = result_json["version-rolling.mask"].as<const char *>();
-        if (!mask) {
+        if (!parseHexUint32(mask, &message->version_mask)) {
+            ESP_LOGE(TAG, "Invalid configure version mask");
             return false;
         }
-        message->version_mask = strtoul(mask, NULL, 16);
         ESP_LOGI(TAG, "Set version mask: %08lx", message->version_mask);
         break;
     }
@@ -352,7 +577,8 @@ bool StratumApi::parseSetupResponses(JsonDocument &doc, StratumApiV1Message *mes
     return true;
 }
 
-bool StratumApi::parse(StratumApiV1Message *message, const char *stratum_json)
+bool StratumApi::parse(StratumApiV1Message *message, const char *stratum_json,
+                       int last_setup_message_id)
 {
     PSRAMAllocator allocator;
     JsonDocument doc(&allocator);
@@ -364,10 +590,11 @@ bool StratumApi::parse(StratumApiV1Message *message, const char *stratum_json)
         return false;
     }
 
-    return parse(message, doc);
+    return parse(message, doc, last_setup_message_id);
 }
 
-bool StratumApi::parse(StratumApiV1Message *message, JsonDocument &doc)
+bool StratumApi::parse(StratumApiV1Message *message, JsonDocument &doc,
+                       int last_setup_message_id)
 {
     // Extract message ID
     message->message_id = doc["id"].is<int>() ? doc["id"].as<int>() : -1;
@@ -378,7 +605,7 @@ bool StratumApi::parse(StratumApiV1Message *message, JsonDocument &doc)
     if (method_str) {
         return parseMethods(doc, method_str, message);
     } else {
-        if (message->message_id <= STRATUM_LAST_SETUP_ID) {
+        if (message->message_id > 0 && message->message_id <= last_setup_message_id) {
             return parseSetupResponses(doc, message);
         }
         return parseResponses(doc, message);
@@ -404,6 +631,9 @@ void StratumApi::freeMiningNotify(mining_notify *params)
 //--------------------------------------------------------------------
 bool StratumApi::send(StratumTransport *transport, const char *message)
 {
+    if (!transport || !message) {
+        return false;
+    }
     debugTx(message);
 
     if (!transport->isConnected()) {
@@ -413,6 +643,7 @@ bool StratumApi::send(StratumTransport *transport, const char *message)
 
     const char *p = message;
     size_t remaining = strlen(message);
+    int64_t deadline = esp_timer_get_time() + 35LL * 1000 * 1000;
 
     while (remaining > 0) {
         int n = transport->send(p, remaining);
@@ -424,6 +655,10 @@ bool StratumApi::send(StratumTransport *transport, const char *message)
 
         // n == 0 means "no progress"; treat like a retryable condition.
         if (n == 0 || (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))) {
+            if (esp_timer_get_time() >= deadline || !transport->isConnected()) {
+                ESP_LOGE(TAG, "Timed out writing Stratum message");
+                return false;
+            }
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -439,10 +674,25 @@ bool StratumApi::send(StratumTransport *transport, const char *message)
 //--------------------------------------------------------------------
 bool StratumApi::subscribe(StratumTransport *transport, const char *device, const char *asic)
 {
+    PThreadGuard lock(m_sendMutex);
+    if (!m_requestBuffer || !device || !asic) {
+        return false;
+    }
     const esp_app_desc_t *app_desc = esp_app_get_description();
     const char *version = app_desc->version;
-    snprintf(m_requestBuffer, BUFFER_SIZE, "{\"id\": %d, \"method\": \"mining.subscribe\", \"params\": [\"%s/%s/%s\"]}\n",
-             m_send_uid++, device, asic, version);
+    size_t len = 0;
+    if (!appendFormatted(m_requestBuffer, BUFFER_SIZE, &len,
+                         "{\"id\": %d, \"method\": \"mining.subscribe\", \"params\": [\"", m_send_uid) ||
+        !appendJsonEscapedContent(m_requestBuffer, BUFFER_SIZE, &len, device) ||
+        !appendLiteral(m_requestBuffer, BUFFER_SIZE, &len, "/") ||
+        !appendJsonEscapedContent(m_requestBuffer, BUFFER_SIZE, &len, asic) ||
+        !appendLiteral(m_requestBuffer, BUFFER_SIZE, &len, "/") ||
+        !appendJsonEscapedContent(m_requestBuffer, BUFFER_SIZE, &len, version) ||
+        !appendLiteral(m_requestBuffer, BUFFER_SIZE, &len, "\"]}\n")) {
+        ESP_LOGE(TAG, "Subscribe request exceeds buffer");
+        return false;
+    }
+    m_send_uid++;
 
     return send(transport, m_requestBuffer);
 }
@@ -452,10 +702,17 @@ bool StratumApi::subscribe(StratumTransport *transport, const char *device, cons
 //--------------------------------------------------------------------
 bool StratumApi::entranonceSubscribe(StratumTransport *transport)
 {
-    const esp_app_desc_t *app_desc = esp_app_get_description();
-    const char *version = app_desc->version;
-    snprintf(m_requestBuffer, BUFFER_SIZE, "{\"id\": %d, \"method\": \"mining.extranonce.subscribe\", \"params\": []}\n",
-        m_send_uid++);
+    PThreadGuard lock(m_sendMutex);
+    if (!m_requestBuffer) {
+        return false;
+    }
+    int len = snprintf(m_requestBuffer, BUFFER_SIZE,
+                       "{\"id\": %d, \"method\": \"mining.extranonce.subscribe\", \"params\": []}\n",
+                       m_send_uid++);
+    if (len < 0 || len >= BUFFER_SIZE) {
+        ESP_LOGE(TAG, "Extranonce subscribe request exceeds buffer");
+        return false;
+    }
 
     return send(transport, m_requestBuffer);
 }
@@ -465,8 +722,17 @@ bool StratumApi::entranonceSubscribe(StratumTransport *transport)
 //--------------------------------------------------------------------
 bool StratumApi::suggestDifficulty(StratumTransport *transport, uint32_t difficulty)
 {
-    snprintf(m_requestBuffer, BUFFER_SIZE, "{\"id\": %d, \"method\": \"mining.suggest_difficulty\", \"params\": [%ld]}\n",
-             m_send_uid++, difficulty);
+    PThreadGuard lock(m_sendMutex);
+    if (!m_requestBuffer) {
+        return false;
+    }
+    int len = snprintf(m_requestBuffer, BUFFER_SIZE,
+                       "{\"id\": %d, \"method\": \"mining.suggest_difficulty\", \"params\": [%lu]}\n",
+                       m_send_uid++, (unsigned long)difficulty);
+    if (len < 0 || len >= BUFFER_SIZE) {
+        ESP_LOGE(TAG, "Difficulty request exceeds buffer");
+        return false;
+    }
 
     return send(transport, m_requestBuffer);
 }
@@ -476,8 +742,21 @@ bool StratumApi::suggestDifficulty(StratumTransport *transport, uint32_t difficu
 //--------------------------------------------------------------------
 bool StratumApi::authenticate(StratumTransport *transport, const char *username, const char *pass)
 {
-    snprintf(m_requestBuffer, BUFFER_SIZE, "{\"id\": %d, \"method\": \"mining.authorize\", \"params\": [\"%s\", \"%s\"]}\n",
-             m_send_uid++, username, pass);
+    PThreadGuard lock(m_sendMutex);
+    if (!m_requestBuffer || !username || !pass) {
+        return false;
+    }
+    size_t len = 0;
+    if (!appendFormatted(m_requestBuffer, BUFFER_SIZE, &len,
+                         "{\"id\": %d, \"method\": \"mining.authorize\", \"params\": [", m_send_uid) ||
+        !appendJsonString(m_requestBuffer, BUFFER_SIZE, &len, username) ||
+        !appendLiteral(m_requestBuffer, BUFFER_SIZE, &len, ", ") ||
+        !appendJsonString(m_requestBuffer, BUFFER_SIZE, &len, pass) ||
+        !appendLiteral(m_requestBuffer, BUFFER_SIZE, &len, "]}\n")) {
+        ESP_LOGE(TAG, "Authorize request exceeds buffer");
+        return false;
+    }
+    m_send_uid++;
 
     return send(transport, m_requestBuffer);
 }
@@ -488,9 +767,25 @@ bool StratumApi::authenticate(StratumTransport *transport, const char *username,
 bool StratumApi::submitShare(StratumTransport *transport, const char *username, const char *jobid, const char *extranonce_2, uint32_t ntime,
                              uint32_t nonce, uint32_t version)
 {
-    snprintf(m_requestBuffer, BUFFER_SIZE,
-             "{\"id\": %d, \"method\": \"mining.submit\", \"params\": [\"%s\", \"%s\", \"%s\", \"%08lx\", \"%08lx\", \"%08lx\"]}\n",
-             m_send_uid++, username, jobid, extranonce_2, ntime, nonce, version);
+    PThreadGuard lock(m_sendMutex);
+    if (!m_requestBuffer || !username || !jobid || !extranonce_2) {
+        return false;
+    }
+    size_t len = 0;
+    if (!appendFormatted(m_requestBuffer, BUFFER_SIZE, &len,
+                         "{\"id\": %d, \"method\": \"mining.submit\", \"params\": [", m_send_uid) ||
+        !appendJsonString(m_requestBuffer, BUFFER_SIZE, &len, username) ||
+        !appendLiteral(m_requestBuffer, BUFFER_SIZE, &len, ", ") ||
+        !appendJsonString(m_requestBuffer, BUFFER_SIZE, &len, jobid) ||
+        !appendLiteral(m_requestBuffer, BUFFER_SIZE, &len, ", ") ||
+        !appendJsonString(m_requestBuffer, BUFFER_SIZE, &len, extranonce_2) ||
+        !appendFormatted(m_requestBuffer, BUFFER_SIZE, &len,
+                         ", \"%08lx\", \"%08lx\", \"%08lx\"]}\n",
+                         (unsigned long)ntime, (unsigned long)nonce, (unsigned long)version)) {
+        ESP_LOGE(TAG, "Share request exceeds buffer");
+        return false;
+    }
+    m_send_uid++;
 
     return send(transport, m_requestBuffer);
 }
@@ -500,10 +795,18 @@ bool StratumApi::submitShare(StratumTransport *transport, const char *username, 
 //--------------------------------------------------------------------
 bool StratumApi::configureVersionRolling(StratumTransport *transport)
 {
-    snprintf(m_requestBuffer, BUFFER_SIZE,
-             "{\"id\": %d, \"method\": \"mining.configure\", \"params\": [[\"version-rolling\"], {\"version-rolling.mask\": "
-             "\"1fffe000\"}]}\n",
-             m_send_uid++);
+    PThreadGuard lock(m_sendMutex);
+    if (!m_requestBuffer) {
+        return false;
+    }
+    int len = snprintf(m_requestBuffer, BUFFER_SIZE,
+                       "{\"id\": %d, \"method\": \"mining.configure\", \"params\": [[\"version-rolling\"], {\"version-rolling.mask\": "
+                       "\"1fffe000\"}]}\n",
+                       m_send_uid++);
+    if (len < 0 || len >= BUFFER_SIZE) {
+        ESP_LOGE(TAG, "Configure request exceeds buffer");
+        return false;
+    }
 
     return send(transport, m_requestBuffer);
 }
@@ -513,6 +816,7 @@ bool StratumApi::configureVersionRolling(StratumTransport *transport)
 //--------------------------------------------------------------------
 void StratumApi::resetUid()
 {
+    PThreadGuard lock(m_sendMutex);
     ESP_LOGI(TAG, "Resetting stratum uid");
     m_send_uid = 1;
 }
@@ -522,6 +826,8 @@ void StratumApi::resetUid()
 //--------------------------------------------------------------------
 void StratumApi::clearBuffer()
 {
-    memset(m_buffer, 0, BIG_BUFFER_SIZE);
+    if (m_buffer) {
+        memset(m_buffer, 0, BIG_BUFFER_SIZE);
+    }
     m_len = 0;
 }

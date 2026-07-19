@@ -1,5 +1,6 @@
 #include "can_sender.h"
 
+#include <pthread.h>
 #include <string.h>
 #include "driver/twai.h"
 #include "esp_log.h"
@@ -12,17 +13,16 @@ static const char *TAG = "can_sender";
 
 // Mutex ensuring multiframe packets are sent atomically —
 // prevents interleaving when multiple tasks call can_send_* concurrently.
-static SemaphoreHandle_t s_tx_mutex = NULL;
+static pthread_mutex_t s_tx_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void tx_lock(void)
 {
-    if (!s_tx_mutex) s_tx_mutex = xSemaphoreCreateMutex();
-    xSemaphoreTake(s_tx_mutex, portMAX_DELAY);
+    pthread_mutex_lock(&s_tx_mutex);
 }
 
 static void tx_unlock(void)
 {
-    xSemaphoreGive(s_tx_mutex);
+    pthread_mutex_unlock(&s_tx_mutex);
 }
 
 // ---------------------------------------------------------------------------

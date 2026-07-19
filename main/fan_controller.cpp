@@ -4,6 +4,7 @@
 #include <math.h>
 
 #include "esp_log.h"
+#include "fan_config_safety.h"
 #include "nvs_config.h"
 
 static const char* TAG = "fan_ctrl";
@@ -68,19 +69,25 @@ void FanController::init(Board* board, int sampleTimeMs)
 void FanController::loadSettings()
 {
     m_pidUseMax = Config::isFanPidUseMax();
+    bool repaired = false;
 
     for (int ch = 0; ch < m_numChannels; ch++) {
-        PidSettings* bp = m_board->getPidSettings(ch);
+        FanConfigSafety::Settings settings;
+        repaired |= FanConfigSafety::sanitizePersisted(m_board, ch, m_numChannels, &settings);
 
-        m_config[ch].mode         = static_cast<Mode>(Config::getFanMode(ch));
-        m_config[ch].manualSpeed  = Config::getFanManualSpeed(ch);
-        m_config[ch].overheatTemp = Config::getFanOverheatTemp(ch);
-        m_config[ch].pid.targetTemp = Config::getFanPidTargetTemp(ch, bp->targetTemp);
-        m_config[ch].pid.p          = Config::getFanPidP(ch, bp->p);
-        m_config[ch].pid.i          = Config::getFanPidI(ch, bp->i);
-        m_config[ch].pid.d          = Config::getFanPidD(ch, bp->d);
+        m_config[ch].mode           = static_cast<Mode>(settings.mode);
+        m_config[ch].manualSpeed    = settings.manualSpeed;
+        m_config[ch].overheatTemp   = settings.overheatTemp;
+        m_config[ch].pid.targetTemp = settings.targetTemp;
+        m_config[ch].pid.p          = settings.pidP;
+        m_config[ch].pid.i          = settings.pidI;
+        m_config[ch].pid.d          = settings.pidD;
 
         applyConfig(ch);  // no-op if PID not yet created
+    }
+
+    if (repaired) {
+        Config::flush();
     }
 }
 

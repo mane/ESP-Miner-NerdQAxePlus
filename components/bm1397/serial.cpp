@@ -75,7 +75,31 @@ int SERIAL_send(uint8_t *data, int len)
 /// @return number of bytes read, or -1 on error
 int16_t SERIAL_rx(uint8_t *buf, uint16_t size, uint16_t timeout_ms)
 {
-    int16_t bytes_read = uart_read_bytes(UART_NUM_1, buf, size, pdMS_TO_TICKS(timeout_ms));
+    if (!buf || size == 0) {
+        return -1;
+    }
+
+    TickType_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
+    TickType_t started = xTaskGetTickCount();
+    int total_read = 0;
+
+    // uart_read_bytes() may legally return a short read as soon as bytes are
+    // available. Accumulate until the fixed-size ASIC frame is complete or the
+    // caller's overall timeout expires.
+    do {
+        TickType_t elapsed = xTaskGetTickCount() - started;
+        TickType_t remaining = (elapsed < timeout_ticks) ? (timeout_ticks - elapsed) : 0;
+        int read_now = uart_read_bytes(UART_NUM_1, buf + total_read, size - total_read, remaining);
+        if (read_now < 0) {
+            return -1;
+        }
+        if (read_now == 0) {
+            break;
+        }
+        total_read += read_now;
+    } while (total_read < size);
+
+    int16_t bytes_read = static_cast<int16_t>(total_read);
 
 #ifdef ASIC_SERIALRX_DEBUG
     size_t buff_len = 0;

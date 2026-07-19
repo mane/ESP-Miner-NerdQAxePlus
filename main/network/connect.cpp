@@ -121,9 +121,6 @@ static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_
             return;
         }
 
-        /* Small backoff */
-        vTaskDelay(pdMS_TO_TICKS(1000));
-
         if (s_retry_num < WIFI_MAXIMUM_RETRY) {
             esp_wifi_connect();
             s_retry_num++;
@@ -155,6 +152,7 @@ static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_
         s_retry_num = 0;
 
         if (s_wifi_event_group) {
+            xEventGroupClearBits(s_wifi_event_group, WIFI_FAIL_BIT);
             xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         }
 
@@ -177,8 +175,15 @@ EventBits_t wifi_wait_connected_ms(TickType_t ticks)
 
 static void generate_ssid_impl(char *ssid)
 {
-    uint8_t mac[6];
-    esp_wifi_get_mac(WIFI_IF_AP, mac);
+    if (!ssid) {
+        return;
+    }
+
+    uint8_t mac[6] = {};
+    esp_err_t err = esp_wifi_get_mac(WIFI_IF_AP, mac);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_get_mac(AP) failed: %s", esp_err_to_name(err));
+    }
     snprintf(ssid, 32, "Nerdaxe_%02X%02X", mac[4], mac[5]);
 }
 
@@ -190,6 +195,10 @@ void generate_ssid(char *ssid)
 static esp_netif_t *wifi_init_softap(void)
 {
     esp_netif_t *esp_netif_ap = esp_netif_create_default_wifi_ap();
+    if (!esp_netif_ap) {
+        ESP_LOGE(TAG, "Failed to create default WiFi AP netif");
+        return nullptr;
+    }
 
     char ssid_with_mac[13] = {0};
     generate_ssid_impl(ssid_with_mac);
@@ -228,6 +237,13 @@ void wifi_softap_on(void)
 static esp_netif_t *wifi_init_sta(const char *wifi_ssid, const char *wifi_pass)
 {
     esp_netif_t *esp_netif_sta = esp_netif_create_default_wifi_sta();
+    if (!esp_netif_sta) {
+        ESP_LOGE(TAG, "Failed to create default WiFi STA netif");
+        return nullptr;
+    }
+
+    const char *ssid = wifi_ssid ? wifi_ssid : "";
+    const char *password = wifi_pass ? wifi_pass : "";
 
     wifi_config_t wifi_sta_config;
     memset(&wifi_sta_config, 0, sizeof(wifi_sta_config));
@@ -241,11 +257,11 @@ static esp_netif_t *wifi_init_sta(const char *wifi_ssid, const char *wifi_pass)
     wifi_sta_config.sta.rm_enabled = 1;
 
     /* Copy credentials */
-    s_has_ssid = (wifi_ssid && wifi_ssid[0] != '\0');
-    strncpy((char *) wifi_sta_config.sta.ssid, wifi_ssid, sizeof(wifi_sta_config.sta.ssid));
+    s_has_ssid = (ssid[0] != '\0');
+    strncpy((char *) wifi_sta_config.sta.ssid, ssid, sizeof(wifi_sta_config.sta.ssid));
     wifi_sta_config.sta.ssid[sizeof(wifi_sta_config.sta.ssid) - 1] = '\0';
 
-    strncpy((char *) wifi_sta_config.sta.password, wifi_pass, sizeof(wifi_sta_config.sta.password));
+    strncpy((char *) wifi_sta_config.sta.password, password, sizeof(wifi_sta_config.sta.password));
     wifi_sta_config.sta.password[sizeof(wifi_sta_config.sta.password) - 1] = '\0';
 
     /* Allow open networks if password empty */
@@ -264,7 +280,13 @@ esp_netif_t *wifi_init(const char *wifi_ssid, const char *wifi_pass, const char 
 {
     if (!s_wifi_event_group) {
         s_wifi_event_group = xEventGroupCreate();
+        if (!s_wifi_event_group) {
+            ESP_LOGE(TAG, "Failed to create WiFi event group");
+            return nullptr;
+        }
     }
+
+    xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
 
     strncpy(s_ip_addr, "0.0.0.0", sizeof(s_ip_addr));
     s_ip_addr[sizeof(s_ip_addr) - 1] = '\0';
@@ -295,24 +317,32 @@ esp_netif_t *wifi_init(const char *wifi_ssid, const char *wifi_pass, const char 
     /* Create AP/STA netifs (only once) */
     if (!s_netif_ap) {
         s_netif_ap = wifi_init_softap();
+        if (!s_netif_ap) {
+            return nullptr;
+        }
     }
     if (!s_netif_sta) {
         s_netif_sta = wifi_init_sta(wifi_ssid, wifi_pass);
+        if (!s_netif_sta) {
+            return nullptr;
+        }
     }
 
     esp_err_t err = esp_wifi_start();
-    if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
-        ESP_ERROR_CHECK(err);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
+        return nullptr;
     }
 
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
     if (s_netif_sta) {
-        err = esp_netif_set_hostname(s_netif_sta, hostname);
+        const char *safe_hostname = (hostname && hostname[0]) ? hostname : "nerdminer";
+        err = esp_netif_set_hostname(s_netif_sta, safe_hostname);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "esp_netif_set_hostname failed: %s", esp_err_to_name(err));
         } else {
-            ESP_LOGI(TAG, "Hostname: %s", hostname);
+            ESP_LOGI(TAG, "Hostname: %s", safe_hostname);
         }
     }
 
@@ -366,6 +396,10 @@ esp_err_t wifi_scan(wifi_ap_record_simple_t *ap_records, uint16_t *ap_count)
 
     if (s_is_scanning) {
         ESP_LOGE(TAG, "WiFi scan timeout");
+        esp_err_t stop_err = esp_wifi_scan_stop();
+        if (stop_err != ESP_OK) {
+            ESP_LOGW(TAG, "esp_wifi_scan_stop failed after timeout: %s", esp_err_to_name(stop_err));
+        }
         s_is_scanning = false;
         s_scan_suppress_reconnect = false;
         if (s_has_ssid) esp_wifi_connect();

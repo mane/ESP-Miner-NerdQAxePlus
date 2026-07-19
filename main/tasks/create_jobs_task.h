@@ -31,6 +31,13 @@ extern MiningInfoBase* miningInfo[2];
 
 // Mutex for protecting miningInfo access
 extern pthread_mutex_t current_stratum_job_mutex;
+// Incremented under current_stratum_job_mutex whenever clean work invalidates
+// already-built jobs. Senders snapshot and re-check it before publishing work.
+extern uint64_t miningJobGeneration[2];
+
+// Caller must hold current_stratum_job_mutex. Uses a consistent lock order:
+// current mining state -> local job table -> slave job tables.
+void clean_asic_jobs_for_pool_locked(int pool);
 
 // Main task entry point
 void create_jobs_task(void *pvParameters);

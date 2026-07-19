@@ -42,6 +42,9 @@ class StratumTaskBase {
 
     volatile bool m_isConnected = false; ///< Connection state flag
     volatile bool m_reconnect = false;
+    pthread_mutex_t m_configMutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_t m_ioMutex = PTHREAD_MUTEX_INITIALIZER;
+    int m_lastSetupMessageId = 0;
 
     // Connection and network-related methods
     bool isWifiConnected();                                                      ///< Check if Wi-Fi is connected

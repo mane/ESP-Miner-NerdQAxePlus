@@ -3,6 +3,7 @@
 
 #include <cstring>
 #include <cstdlib>
+#include <cctype>
 
 extern "C" {
 #include "mining_utils.h"
@@ -37,6 +38,20 @@ StratumTaskV2::StratumTaskV2(StratumManager *manager, int index)
 {
     memset(&m_sv2_conn, 0, sizeof(m_sv2_conn));
     m_channelType = SV2_CHANNEL_EXTENDED; // default
+}
+
+StratumTaskV2::~StratumTaskV2()
+{
+    resetConnectionState();
+}
+
+void StratumTaskV2::resetConnectionState()
+{
+    for (int i = 0; i < SV2_PENDING_JOBS_SIZE; i++) {
+        sv2_ext_job_free(m_sv2_conn.ext_pending_jobs[i]);
+        m_sv2_conn.ext_pending_jobs[i] = nullptr;
+    }
+    memset(&m_sv2_conn, 0, sizeof(m_sv2_conn));
 }
 
 StratumTransport *StratumTaskV2::selectTransport()
@@ -111,7 +126,7 @@ void StratumTaskV2::protocolLoop()
     m_channelType = SV2_CHANNEL_EXTENDED;
 
     // Reset connection state
-    memset(&m_sv2_conn, 0, sizeof(m_sv2_conn));
+    resetConnectionState();
     m_sv2_conn.channel_type = m_channelType;
     m_lastSubmitTimeUs = 0;
 
@@ -163,7 +178,11 @@ void StratumTaskV2::protocolLoop()
         }
 
         sv2_frame_header_t hdr;
-        sv2_parse_frame_header(m_hdrBuf, &hdr);
+        if (sv2_parse_frame_header(m_hdrBuf, &hdr) != 0 || payload_len < 0 ||
+            hdr.msg_length != static_cast<uint32_t>(payload_len)) {
+            ESP_LOGE(m_tag, "Invalid SV2 frame header/length");
+            return;
+        }
 
         switch (hdr.msg_type) {
         case SV2_MSG_NEW_MINING_JOB:
@@ -180,6 +199,10 @@ void StratumTaskV2::protocolLoop()
 
         case SV2_MSG_SET_TARGET:
             handleSetTarget(m_recvBuf, hdr.msg_length);
+            break;
+
+        case SV2_MSG_SET_EXTRANONCE_PREFIX:
+            handleSetExtranoncePrefix(m_recvBuf, hdr.msg_length);
             break;
 
         case SV2_MSG_SUBMIT_SHARES_SUCCESS:
@@ -224,6 +247,7 @@ bool StratumTaskV2::sendSetupConnection()
         return false;
     }
 
+    PThreadGuard io_lock(m_ioMutex);
     sv2_noise_ctx_t *noise = m_noiseTransport.getNoiseCtx();
     esp_transport_handle_t transport = m_noiseTransport.getTransportHandle();
 
@@ -248,7 +272,11 @@ bool StratumTaskV2::receiveSetupConnectionSuccess()
     }
 
     sv2_frame_header_t hdr;
-    sv2_parse_frame_header(m_hdrBuf, &hdr);
+    if (sv2_parse_frame_header(m_hdrBuf, &hdr) != 0 || payload_len < 0 ||
+        hdr.msg_length != static_cast<uint32_t>(payload_len)) {
+        ESP_LOGE(m_tag, "Invalid SetupConnectionSuccess frame length");
+        return false;
+    }
 
     if (hdr.msg_type != SV2_MSG_SETUP_CONNECTION_SUCCESS) {
         ESP_LOGE(m_tag, "SetupConnection rejected by pool (msg_type=0x%02x)", hdr.msg_type);
@@ -260,6 +288,11 @@ bool StratumTaskV2::receiveSetupConnectionSuccess()
     if (sv2_parse_setup_connection_success(m_recvBuf, payload_len, &used_version, &flags) != 0) {
         ESP_LOGE(m_tag, "Failed to parse SetupConnectionSuccess");
         return false;
+    }
+
+    m_sv2_conn.requires_fixed_version = (flags & 0x01U) != 0;
+    if (m_sv2_conn.requires_fixed_version) {
+        ESP_LOGW(m_tag, "Pool requires fixed block versions; version rolling disabled");
     }
 
     ESP_LOGI(m_tag, "Pool accepted connection: SV2 version=%d, flags=0x%08lx",
@@ -288,6 +321,7 @@ bool StratumTaskV2::sendOpenChannel()
         return false;
     }
 
+    PThreadGuard io_lock(m_ioMutex);
     sv2_noise_ctx_t *noise = m_noiseTransport.getNoiseCtx();
     esp_transport_handle_t transport = m_noiseTransport.getTransportHandle();
 
@@ -312,7 +346,11 @@ bool StratumTaskV2::receiveOpenChannelSuccess()
     }
 
     sv2_frame_header_t hdr;
-    sv2_parse_frame_header(m_hdrBuf, &hdr);
+    if (sv2_parse_frame_header(m_hdrBuf, &hdr) != 0 || payload_len < 0 ||
+        hdr.msg_length != static_cast<uint32_t>(payload_len)) {
+        ESP_LOGE(m_tag, "Invalid OpenChannelSuccess frame length");
+        return false;
+    }
 
     uint8_t expected_msg = (m_channelType == SV2_CHANNEL_EXTENDED)
                                ? SV2_MSG_OPEN_EXTENDED_MINING_CHANNEL_SUCCESS
@@ -340,7 +378,12 @@ bool StratumTaskV2::receiveOpenChannelSuccess()
             return false;
         }
 
-        m_sv2_conn.extranonce_size = (uint8_t)extranonce_size;
+        if (extranonce_size == 0 || extranonce_size > 32) {
+            ESP_LOGE(m_tag, "Unsupported extended-channel extranonce size: %u", extranonce_size);
+            return false;
+        }
+
+        m_sv2_conn.extranonce_size = static_cast<uint8_t>(extranonce_size);
         m_sv2_conn.extranonce_prefix_len = extranonce_prefix_len;
         memcpy(m_sv2_conn.extranonce_prefix, extranonce_prefix, extranonce_prefix_len);
 
@@ -364,7 +407,10 @@ bool StratumTaskV2::receiveOpenChannelSuccess()
     memcpy(m_sv2_conn.target, target, 32);
 
     uint32_t pdiff = sv2_target_to_pdiff(target);
-    m_manager->setPoolDifficulty(m_index, pdiff);
+    {
+        PThreadGuard manager_lock(m_manager->m_mutex);
+        m_manager->setPoolDifficulty(m_index, pdiff);
+    }
 
     ESP_LOGI(m_tag, "Mining channel opened: channel_id=%lu, type=%s, difficulty=%lu",
              (unsigned long)channel_id,
@@ -390,6 +436,10 @@ void StratumTaskV2::handleNewMiningJob(const uint8_t *payload, uint32_t len)
         ESP_LOGE(m_tag, "Failed to parse NewMiningJob");
         return;
     }
+    if (channel_id != m_sv2_conn.channel_id) {
+        ESP_LOGW(m_tag, "Ignoring job for unexpected channel %lu", (unsigned long)channel_id);
+        return;
+    }
 
     ESP_LOGI(m_tag, "New mining job: id=%lu, version=%08lx, future=%s",
              (unsigned long)job_id, (unsigned long)version, has_min_ntime ? "no" : "yes");
@@ -398,9 +448,11 @@ void StratumTaskV2::handleNewMiningJob(const uint8_t *payload, uint32_t len)
 
     if (has_min_ntime) {
         if (m_sv2_conn.has_prev_hash) {
-            enqueueStandardJob(job_id, version, merkle_root,
-                               m_sv2_conn.prev_hash, min_ntime,
-                               m_sv2_conn.prev_hash_nbits, true);
+            bool enqueued = enqueueStandardJob(job_id, version, merkle_root,
+                                               m_sv2_conn.prev_hash, min_ntime,
+                                               m_sv2_conn.prev_hash_nbits, true);
+            PThreadGuard manager_lock(m_manager->m_mutex);
+            m_validNotify = enqueued;
         } else {
             m_sv2_conn.pending_jobs[slot].job_id = job_id;
             m_sv2_conn.pending_jobs[slot].version = version;
@@ -423,6 +475,11 @@ void StratumTaskV2::handleNewExtendedMiningJob(const uint8_t *payload, uint32_t 
         ESP_LOGE(m_tag, "Failed to parse NewExtendedMiningJob");
         return;
     }
+    if (channel_id != m_sv2_conn.channel_id) {
+        ESP_LOGW(m_tag, "Ignoring extended job for unexpected channel %lu", (unsigned long)channel_id);
+        sv2_ext_job_free(job);
+        return;
+    }
 
     ESP_LOGI(m_tag, "New extended mining job: id=%lu, version=%08lx, merkle_branches=%d",
              (unsigned long)job->job_id, (unsigned long)job->version, job->merkle_path_count);
@@ -435,7 +492,9 @@ void StratumTaskV2::handleNewExtendedMiningJob(const uint8_t *payload, uint32_t 
             memcpy(job->prev_hash, m_sv2_conn.prev_hash, 32);
             job->nbits = m_sv2_conn.prev_hash_nbits;
             job->clean_jobs = true;
-            enqueueExtendedJob(job);
+            bool enqueued = enqueueExtendedJob(job);
+            PThreadGuard manager_lock(m_manager->m_mutex);
+            m_validNotify = enqueued;
         } else {
             if (m_sv2_conn.ext_pending_jobs[slot]) {
                 sv2_ext_job_free(m_sv2_conn.ext_pending_jobs[slot]);
@@ -461,14 +520,20 @@ void StratumTaskV2::handleSetNewPrevHash(const uint8_t *payload, uint32_t len)
         ESP_LOGE(m_tag, "Failed to parse SetNewPrevHash");
         return;
     }
+    if (channel_id != m_sv2_conn.channel_id) {
+        ESP_LOGW(m_tag, "Ignoring prev-hash for unexpected channel %lu", (unsigned long)channel_id);
+        return;
+    }
 
     ESP_LOGI(m_tag, "New prev_hash: job_id=%lu, ntime=%lu, nbits=%08lx",
              (unsigned long)job_id, (unsigned long)min_ntime, (unsigned long)nbits);
 
-    // Notify manager of network difficulty
-    m_manager->setNetworkDifficulty(m_index, nbits);
-
-    bool first_prev_hash = !m_sv2_conn.has_prev_hash;
+    // Notify manager of network difficulty. Release this lock before any job
+    // enqueue, which acquires current_stratum_job_mutex.
+    {
+        PThreadGuard manager_lock(m_manager->m_mutex);
+        m_manager->setNetworkDifficulty(m_index, nbits);
+    }
 
     memcpy(m_sv2_conn.prev_hash, prev_hash, 32);
     m_sv2_conn.prev_hash_ntime = min_ntime;
@@ -477,29 +542,21 @@ void StratumTaskV2::handleSetNewPrevHash(const uint8_t *payload, uint32_t len)
 
     int slot = job_id % SV2_PENDING_JOBS_SIZE;
 
-    // Resolve standard channel pending jobs
+    bool activated_job = false;
+
+    // Per SV2 5.3.17, only the exactly referenced job remains valid.
     if (m_sv2_conn.pending_jobs[slot].valid &&
         m_sv2_conn.pending_jobs[slot].job_id == job_id) {
-        enqueueStandardJob(job_id, m_sv2_conn.pending_jobs[slot].version,
-                           m_sv2_conn.pending_jobs[slot].merkle_root,
-                           prev_hash, min_ntime, nbits, true);
-        m_sv2_conn.pending_jobs[slot].valid = false;
+        activated_job = enqueueStandardJob(job_id, m_sv2_conn.pending_jobs[slot].version,
+                                           m_sv2_conn.pending_jobs[slot].merkle_root,
+                                           prev_hash, min_ntime, nbits, true);
+    }
+    for (int i = 0; i < SV2_PENDING_JOBS_SIZE; i++) {
+        m_sv2_conn.pending_jobs[i].valid = false;
     }
 
-    if (first_prev_hash) {
-        for (int i = 0; i < SV2_PENDING_JOBS_SIZE; i++) {
-            if (m_sv2_conn.pending_jobs[i].valid &&
-                m_sv2_conn.pending_jobs[i].job_id != job_id) {
-                enqueueStandardJob(m_sv2_conn.pending_jobs[i].job_id,
-                                   m_sv2_conn.pending_jobs[i].version,
-                                   m_sv2_conn.pending_jobs[i].merkle_root,
-                                   prev_hash, min_ntime, nbits, true);
-                m_sv2_conn.pending_jobs[i].valid = false;
-            }
-        }
-    }
-
-    // Resolve extended channel pending jobs
+    // Resolve only the matching extended job, then release every other queued
+    // future job because the new prevhash makes them invalid.
     if (m_sv2_conn.ext_pending_jobs[slot] &&
         m_sv2_conn.ext_pending_jobs[slot]->job_id == job_id) {
         sv2_ext_job_t *ext_job = m_sv2_conn.ext_pending_jobs[slot];
@@ -508,26 +565,24 @@ void StratumTaskV2::handleSetNewPrevHash(const uint8_t *payload, uint32_t len)
         ext_job->ntime = min_ntime;
         ext_job->nbits = nbits;
         ext_job->clean_jobs = true;
-        enqueueExtendedJob(ext_job);
+        activated_job = enqueueExtendedJob(ext_job) || activated_job;
     }
-
-    if (first_prev_hash) {
-        for (int i = 0; i < SV2_PENDING_JOBS_SIZE; i++) {
-            if (m_sv2_conn.ext_pending_jobs[i] &&
-                m_sv2_conn.ext_pending_jobs[i]->job_id != job_id) {
-                sv2_ext_job_t *ext_job = m_sv2_conn.ext_pending_jobs[i];
-                m_sv2_conn.ext_pending_jobs[i] = nullptr;
-                memcpy(ext_job->prev_hash, prev_hash, 32);
-                ext_job->ntime = min_ntime;
-                ext_job->nbits = nbits;
-                ext_job->clean_jobs = true;
-                enqueueExtendedJob(ext_job);
-            }
+    for (int i = 0; i < SV2_PENDING_JOBS_SIZE; i++) {
+        if (m_sv2_conn.ext_pending_jobs[i]) {
+            sv2_ext_job_free(m_sv2_conn.ext_pending_jobs[i]);
+            m_sv2_conn.ext_pending_jobs[i] = nullptr;
         }
     }
 
-    // Mark that we have a valid notify (used by manager for pool selection)
-    m_validNotify = true;
+    {
+        PThreadGuard manager_lock(m_manager->m_mutex);
+        m_validNotify = activated_job;
+    }
+    if (!activated_job) {
+        ESP_LOGE(m_tag, "SetNewPrevHash referenced unavailable job %lu",
+                 (unsigned long)job_id);
+        create_job_invalidate(m_index);
+    }
 }
 
 void StratumTaskV2::handleSetTarget(const uint8_t *payload, uint32_t len)
@@ -539,16 +594,60 @@ void StratumTaskV2::handleSetTarget(const uint8_t *payload, uint32_t len)
         ESP_LOGE(m_tag, "Failed to parse SetTarget");
         return;
     }
+    if (channel_id != m_sv2_conn.channel_id) {
+        ESP_LOGW(m_tag, "Ignoring target for unexpected channel %lu", (unsigned long)channel_id);
+        return;
+    }
 
     memcpy(m_sv2_conn.target, max_target, 32);
     uint32_t pdiff = sv2_target_to_pdiff(max_target);
     ESP_LOGI(m_tag, "Set pool difficulty: %lu", (unsigned long)pdiff);
 
-    m_manager->setPoolDifficulty(m_index, pdiff);
+    {
+        PThreadGuard manager_lock(m_manager->m_mutex);
+        m_manager->setPoolDifficulty(m_index, pdiff);
+    }
 
     // Update difficulty in MiningInfo and force resend for Standard Channel
     // (Bitaxe uses a global pool_difficulty that create_jobs_task reads on each dequeue)
     create_job_sv2_set_difficulty(m_index, pdiff);
+}
+
+void StratumTaskV2::handleSetExtranoncePrefix(const uint8_t *payload, uint32_t len)
+{
+    uint32_t channel_id = 0;
+    uint8_t prefix[32]{};
+    uint8_t prefix_len = 0;
+    if (sv2_parse_set_extranonce_prefix(payload, len, &channel_id, prefix, &prefix_len) != 0) {
+        ESP_LOGE(m_tag, "Failed to parse SetExtranoncePrefix");
+        return;
+    }
+    if (channel_id != m_sv2_conn.channel_id) {
+        ESP_LOGW(m_tag, "Ignoring extranonce prefix for unexpected channel %lu",
+                 (unsigned long)channel_id);
+        return;
+    }
+
+    // Jobs received before this message retain the old prefix per the spec.
+    // Since pending jobs do not carry a per-job prefix, invalidate them and
+    // wait for the pool to provide fresh work under the new prefix.
+    for (int i = 0; i < SV2_PENDING_JOBS_SIZE; i++) {
+        m_sv2_conn.pending_jobs[i].valid = false;
+        if (m_sv2_conn.ext_pending_jobs[i]) {
+            sv2_ext_job_free(m_sv2_conn.ext_pending_jobs[i]);
+            m_sv2_conn.ext_pending_jobs[i] = nullptr;
+        }
+    }
+    memset(m_sv2_conn.extranonce_prefix, 0, sizeof(m_sv2_conn.extranonce_prefix));
+    memcpy(m_sv2_conn.extranonce_prefix, prefix, prefix_len);
+    m_sv2_conn.extranonce_prefix_len = prefix_len;
+    {
+        PThreadGuard manager_lock(m_manager->m_mutex);
+        m_validNotify = false;
+    }
+    create_job_invalidate(m_index);
+
+    ESP_LOGI(m_tag, "Updated extranonce prefix (%u bytes); waiting for a new job", prefix_len);
 }
 
 void StratumTaskV2::handleSubmitSharesSuccess(const uint8_t *payload, uint32_t len)
@@ -556,8 +655,17 @@ void StratumTaskV2::handleSubmitSharesSuccess(const uint8_t *payload, uint32_t l
     uint32_t channel_id;
     uint32_t accepted_count = 0;
     if (sv2_parse_submit_shares_success(payload, len, &channel_id, &accepted_count) == 0) {
-        if (m_lastSubmitTimeUs > 0) {
-            float response_time_ms = (float)(esp_timer_get_time() - m_lastSubmitTimeUs) / 1000.0f;
+        if (channel_id != m_sv2_conn.channel_id) {
+            ESP_LOGW(m_tag, "Ignoring share response for unexpected channel %lu", (unsigned long)channel_id);
+            return;
+        }
+        int64_t last_submit_time = 0;
+        {
+            PThreadGuard io_lock(m_ioMutex);
+            last_submit_time = m_lastSubmitTimeUs;
+        }
+        if (last_submit_time > 0) {
+            float response_time_ms = (float)(esp_timer_get_time() - last_submit_time) / 1000.0f;
             ESP_LOGI(m_tag, "Shares accepted: %lu (%.1f ms)", (unsigned long)accepted_count, response_time_ms);
         } else {
             ESP_LOGI(m_tag, "Shares accepted: %lu", (unsigned long)accepted_count);
@@ -566,10 +674,13 @@ void StratumTaskV2::handleSubmitSharesSuccess(const uint8_t *payload, uint32_t l
             ESP_LOGW(m_tag, "Suspicious accepted_count %lu, capping to 1000", (unsigned long)accepted_count);
             accepted_count = 1000;
         }
-        for (uint32_t i = 0; i < accepted_count; i++) {
-            m_manager->acceptedShare(m_index);
+        {
+            PThreadGuard lock(m_manager->m_mutex);
+            for (uint32_t i = 0; i < accepted_count; i++) {
+                m_manager->acceptedShare(m_index);
+            }
+            m_manager->m_lastSubmitResponseTimestamp = esp_timer_get_time();
         }
-        m_manager->m_lastSubmitResponseTimestamp = esp_timer_get_time();
     }
 }
 
@@ -579,7 +690,12 @@ void StratumTaskV2::handleSubmitSharesError(const uint8_t *payload, uint32_t len
     char error_code[64];
     if (sv2_parse_submit_shares_error(payload, len, &channel_id, &seq_num,
                                        error_code, sizeof(error_code)) == 0) {
+        if (channel_id != m_sv2_conn.channel_id) {
+            ESP_LOGW(m_tag, "Ignoring share error for unexpected channel %lu", (unsigned long)channel_id);
+            return;
+        }
         ESP_LOGW(m_tag, "Share rejected: %s", error_code);
+        PThreadGuard lock(m_manager->m_mutex);
         m_manager->rejectedShare(m_index);
         m_manager->m_lastSubmitResponseTimestamp = esp_timer_get_time();
     }
@@ -593,16 +709,30 @@ void StratumTaskV2::submitShare(const char *jobid, const char *extranonce_2,
                                 const uint32_t ntime, const uint32_t nonce,
                                 const uint32_t version_rolled, const uint32_t version_base)
 {
-    sv2_noise_ctx_t *noise = m_noiseTransport.getNoiseCtx();
-    esp_transport_handle_t transport = m_noiseTransport.getTransportHandle();
-
-    if (!noise || !transport) {
-        ESP_LOGE(m_tag, "Cannot submit share: no connection");
+    if (!jobid || jobid[0] == '\0') {
+        ESP_LOGE(m_tag, "Cannot submit share: invalid job id");
         return;
     }
 
     // Convert string job_id to uint32_t (SV2 uses numeric job IDs)
-    uint32_t sv2_job_id = (uint32_t)strtoul(jobid, nullptr, 10);
+    char *jobid_end = nullptr;
+    unsigned long parsed_job_id = strtoul(jobid, &jobid_end, 10);
+    if (!jobid_end || *jobid_end != '\0' || parsed_job_id > UINT32_MAX) {
+        ESP_LOGE(m_tag, "Cannot submit share: malformed job id");
+        return;
+    }
+    uint32_t sv2_job_id = static_cast<uint32_t>(parsed_job_id);
+
+    // ASIC and CAN producers may submit concurrently. Serialize sequence
+    // allocation, Noise send_nonce mutation, transport writes, and close().
+    PThreadGuard io_lock(m_ioMutex);
+    sv2_noise_ctx_t *noise = m_noiseTransport.getNoiseCtx();
+    esp_transport_handle_t transport = m_noiseTransport.getTransportHandle();
+    if (!m_isConnected || !noise || !transport) {
+        ESP_LOGE(m_tag, "Cannot submit share: no connection");
+        return;
+    }
+    uint32_t sequence_number = m_sv2_conn.sequence_number;
 
     uint8_t buf[SV2_FRAME_HEADER_SIZE + 24 + 1 + 32]; // max size for extended submit
     int frame_len;
@@ -610,26 +740,38 @@ void StratumTaskV2::submitShare(const char *jobid, const char *extranonce_2,
     if (m_channelType == SV2_CHANNEL_EXTENDED && extranonce_2 && strlen(extranonce_2) > 0) {
         // Extended channel: decode hex extranonce2 to binary
         size_t en2_hex_len = strlen(extranonce_2);
+        if ((en2_hex_len & 1U) != 0 || en2_hex_len > 64) {
+            ESP_LOGE(m_tag, "Cannot submit share: malformed extranonce2 length");
+            return;
+        }
         size_t en2_bin_len = en2_hex_len / 2;
-        uint8_t en2_bin[32];
+        uint8_t en2_bin[32]{};
 
         // Simple hex decode
         for (size_t i = 0; i < en2_bin_len && i < sizeof(en2_bin); i++) {
+            if (!std::isxdigit(static_cast<unsigned char>(extranonce_2[i * 2])) ||
+                !std::isxdigit(static_cast<unsigned char>(extranonce_2[i * 2 + 1]))) {
+                ESP_LOGE(m_tag, "Cannot submit share: malformed extranonce2");
+                return;
+            }
             unsigned int byte;
-            sscanf(extranonce_2 + i * 2, "%02x", &byte);
+            if (sscanf(extranonce_2 + i * 2, "%02x", &byte) != 1) {
+                ESP_LOGE(m_tag, "Cannot submit share: malformed extranonce2");
+                return;
+            }
             en2_bin[i] = (uint8_t)byte;
         }
 
         frame_len = sv2_build_submit_shares_extended(
             buf, sizeof(buf), m_sv2_conn.channel_id,
-            m_sv2_conn.sequence_number++,
+            sequence_number,
             sv2_job_id, nonce, ntime, version_rolled,
             en2_bin, (uint8_t)en2_bin_len);
     } else {
         // Standard channel: no extranonce
         frame_len = sv2_build_submit_shares_standard(
             buf, sizeof(buf), m_sv2_conn.channel_id,
-            m_sv2_conn.sequence_number++,
+            sequence_number,
             sv2_job_id, nonce, ntime, version_rolled);
     }
 
@@ -638,10 +780,12 @@ void StratumTaskV2::submitShare(const char *jobid, const char *extranonce_2,
         return;
     }
 
+    m_sv2_conn.sequence_number++;
     m_lastSubmitTimeUs = esp_timer_get_time();
 
     if (sv2_noise_send(noise, transport, buf, frame_len) != 0) {
         ESP_LOGE(m_tag, "Failed to send share");
+        triggerReconnect();
     }
 }
 
@@ -649,18 +793,22 @@ void StratumTaskV2::submitShare(const char *jobid, const char *extranonce_2,
 // Job Delivery (bridge to create_jobs_task via MiningInfo)
 // ============================================================================
 
-void StratumTaskV2::enqueueStandardJob(uint32_t job_id, uint32_t version,
+bool StratumTaskV2::enqueueStandardJob(uint32_t job_id, uint32_t version,
                                        const uint8_t merkle_root[32],
                                        const uint8_t prev_hash[32],
                                        uint32_t ntime, uint32_t nbits, bool clean)
 {
     uint32_t pdiff = sv2_target_to_pdiff(m_sv2_conn.target);
-    create_job_sv2_standard(m_index, job_id, version, merkle_root, prev_hash,
-                            ntime, nbits, 0x1fffe000, pdiff, clean);
+    uint32_t version_mask = m_sv2_conn.requires_fixed_version ? 0 : 0x1fffe000;
+    return create_job_sv2_standard(m_index, job_id, version, merkle_root, prev_hash,
+                                   ntime, nbits, version_mask, pdiff, clean);
 }
 
-void StratumTaskV2::enqueueExtendedJob(sv2_ext_job_t *job)
+bool StratumTaskV2::enqueueExtendedJob(sv2_ext_job_t *job)
 {
+    if (!job) {
+        return false;
+    }
     uint32_t pdiff = sv2_target_to_pdiff(m_sv2_conn.target);
 
     // Process coinbase before handing off the job (data is freed by sv2_ext_job_free below).
@@ -691,18 +839,31 @@ void StratumTaskV2::enqueueExtendedJob(sv2_ext_job_t *job)
             bin2hex(job->coinbase_suffix, job->coinbase_suffix_len, sfx_hex, sfx_hex_len);
 
             // extranonce1="" (already folded into cb1), extranonce2_len=full extranonce_size
-            m_manager->processCoinbase(m_index, pfx_hex, sfx_hex, job->version, job->nbits,
-                                       "", (int)m_sv2_conn.extranonce_size);
+            // processCoinbase reads the live manager config and updates its
+            // verification counters. Protect both, then release the manager
+            // lock before create_job_sv2_extended takes the job mutex below.
+            {
+                PThreadGuard manager_lock(m_manager->m_mutex);
+                m_manager->processCoinbase(m_index, pfx_hex, sfx_hex, job->version, job->nbits,
+                                           "", (int)m_sv2_conn.extranonce_size);
+            }
         }
 
         free(pfx_hex);
         free(sfx_hex);
     }
 
-    create_job_sv2_extended(m_index, job,
-                            m_sv2_conn.extranonce_prefix,
-                            m_sv2_conn.extranonce_prefix_len,
-                            m_sv2_conn.extranonce_size,
-                            0x1fffe000, pdiff, job->clean_jobs);
+    uint32_t version_mask = (!m_sv2_conn.requires_fixed_version && job->version_rolling_allowed)
+                                ? 0x1fffe000
+                                : 0;
+    bool enqueued = create_job_sv2_extended(m_index, job,
+                                            m_sv2_conn.extranonce_prefix,
+                                            m_sv2_conn.extranonce_prefix_len,
+                                            m_sv2_conn.extranonce_size,
+                                            version_mask, pdiff, job->clean_jobs);
+    if (!enqueued) {
+        ESP_LOGE(m_tag, "Failed to enqueue SV2 extended job %lu", (unsigned long)job->job_id);
+    }
     sv2_ext_job_free(job);
+    return enqueued;
 }

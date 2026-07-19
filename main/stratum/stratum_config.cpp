@@ -49,6 +49,13 @@ bool StratumConfig::reload()
     bool newEnsub = m_primary ? Config::isStratumEnonceSubscribe() : Config::isStratumFallbackEnonceSubscribe();
     bool newTLS   = m_primary ? Config::isStratumTLS() : Config::isStratumFallbackTLS();
     StratumProtocol newProto = (StratumProtocol)(m_primary ? Config::getStratumProtocol() : Config::getFallbackStratumProtocol());
+    if (!newHost || !newUser || !newPass) {
+        ESP_LOGE(TAG, "Failed to load Stratum configuration");
+        safe_free(newHost);
+        safe_free(newUser);
+        safe_free(newPass);
+        return false;
+    }
     // Compare
     bool same =
         strEq(m_host, newHost) &&
@@ -85,15 +92,30 @@ bool StratumConfig::reload()
 
 void StratumConfig::copyInto(StratumConfig *dst)
 {
+    if (!dst) {
+        return;
+    }
+
+    char *host = m_host ? strdup(m_host) : nullptr;
+    char *user = m_user ? strdup(m_user) : nullptr;
+    char *password = m_password ? strdup(m_password) : nullptr;
+    if ((m_host && !host) || (m_user && !user) || (m_password && !password)) {
+        ESP_LOGE(TAG, "Failed to copy Stratum configuration");
+        free(host);
+        free(user);
+        free(password);
+        return;
+    }
+
     safe_free(dst->m_host);
     safe_free(dst->m_user);
     safe_free(dst->m_password);
 
     dst->m_primary   = m_primary;
-    dst->m_host      = m_host ? strdup(m_host) : nullptr;
+    dst->m_host      = host;
     dst->m_port      = m_port;
-    dst->m_user      = m_user ? strdup(m_user) : nullptr;
-    dst->m_password  = m_password ? strdup(m_password) : nullptr;
+    dst->m_user      = user;
+    dst->m_password  = password;
     dst->m_enonceSub = m_enonceSub;
     dst->m_tls       = m_tls;
     dst->m_protocol  = m_protocol;

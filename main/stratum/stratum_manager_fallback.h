@@ -47,8 +47,7 @@ class StratumManagerFallback : public StratumManager {
   public:
     StratumManagerFallback();
 
-    virtual const char *getCurrentPoolHost();
-    virtual int getCurrentPoolPort();
+    bool copyCurrentPoolEndpoint(char *host, size_t hostSize, int *port);
 
     virtual int getNextActivePool();
 
@@ -93,7 +92,11 @@ class StratumManagerFallback : public StratumManager {
     }
 
     virtual int getPoolErrors() {
-        return m_stratumTasks[0]->m_poolErrors + m_stratumTasks[1]->m_poolErrors;
+        int errors = 0;
+        for (int i = 0; i < 2; ++i) {
+            if (m_stratumTasks[i]) errors += m_stratumTasks[i]->m_poolErrors;
+        }
+        return errors;
     }
 
     virtual bool isUsingFallback()

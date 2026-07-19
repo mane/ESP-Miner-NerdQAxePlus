@@ -11,6 +11,7 @@
 #include "nvs_config.h"
 #include "http_cors.h"
 #include "http_utils.h"
+#include "fan_settings_patch.h"
 #include "macros.h"
 #include "network_manager.h"
 
@@ -200,6 +201,13 @@ esp_err_t PATCH_V2_settings(httpd_req_t *req)
         return err;
     }
 
+    Board *board = SYSTEM_MODULE.getBoard();
+    FanSettingsPatch fanPatch;
+    char fanError[160]{};
+    if (!parseFanSettingsPatch(doc, board, false, &fanPatch, fanError, sizeof(fanError))) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, fanError);
+    }
+
     // --- network ---
     if (doc["ssid"].is<const char*>()) {
         Config::setWifiSSID(doc["ssid"].as<const char*>());
@@ -262,32 +270,7 @@ esp_err_t PATCH_V2_settings(httpd_req_t *req)
         Config::setCanEnabled(value);
     }
 
-    // --- fans[] ---
-    if (doc["fans"].is<JsonArray>()) {
-        JsonArray fans = doc["fans"].as<JsonArray>();
-        int ch = 0;
-        for (JsonObject fan : fans) {
-            if (ch > 1) break;
-            if (fan["mode"].is<uint16_t>())
-                Config::setFanMode(ch, fan["mode"].as<uint16_t>());
-            if (fan["manualSpeed"].is<uint16_t>())
-                Config::setFanManualSpeed(ch, fan["manualSpeed"].as<uint16_t>());
-            if (fan["overheatTemp"].is<uint16_t>())
-                Config::setFanOverheatTemp(ch, fan["overheatTemp"].as<uint16_t>());
-            if (fan["pid"].is<JsonObject>()) {
-                JsonObject p = fan["pid"].as<JsonObject>();
-                if (p["targetTemp"].is<uint16_t>())
-                    Config::setFanPidTargetTemp(ch, p["targetTemp"].as<uint16_t>());
-                if (p["p"].is<float>())
-                    Config::setFanPidP(ch, (uint16_t)(p["p"].as<float>() * 100.0f));
-                if (p["i"].is<float>())
-                    Config::setFanPidI(ch, (uint16_t)(p["i"].as<float>() * 100.0f));
-                if (p["d"].is<float>())
-                    Config::setFanPidD(ch, (uint16_t)(p["d"].as<float>() * 100.0f));
-            }
-            ch++;
-        }
-    }
+    applyFanSettingsPatch(fanPatch);
 
     // --- pools[] ---
     if (doc["poolMode"].is<uint16_t>()) {
@@ -379,9 +362,10 @@ esp_err_t PATCH_V2_settings(httpd_req_t *req)
     httpd_resp_send_chunk(req, NULL, 0);
 
     // Reload all subsystems
-    Board *board = SYSTEM_MODULE.getBoard();
+    POWER_MANAGEMENT_MODULE.lock();
     board->loadSettings();
     POWER_MANAGEMENT_MODULE.getFanController().loadSettings();
+    POWER_MANAGEMENT_MODULE.unlock();
     SYSTEM_MODULE.loadSettings();
     STRATUM_MANAGER->loadSettings();
 

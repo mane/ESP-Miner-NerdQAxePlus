@@ -10,6 +10,7 @@
 #include "nvs_config.h"
 #include "http_cors.h"
 #include "http_utils.h"
+#include "fan_settings_patch.h"
 
 #include "ping_task.h"
 
@@ -296,6 +297,13 @@ esp_err_t PATCH_update_settings(httpd_req_t *req)
         return err;
     }
 
+    Board *board = SYSTEM_MODULE.getBoard();
+    FanSettingsPatch fanPatch;
+    char fanError[160]{};
+    if (!parseFanSettingsPatch(doc, board, true, &fanPatch, fanError, sizeof(fanError))) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, fanError);
+    }
+
     if (doc["ssid"].is<const char*>()) {
         Config::setWifiSSID(doc["ssid"].as<const char*>());
     }
@@ -329,20 +337,11 @@ esp_err_t PATCH_update_settings(httpd_req_t *req)
     if (doc["flipscreen"].is<bool>()) {
         Config::setFlipScreen(doc["flipscreen"].as<bool>());
     }
-    if (doc["overheat_temp"].is<uint16_t>()) {
-        Config::setOverheatTemp(doc["overheat_temp"].as<uint16_t>());
-    }
     if (doc["invertscreen"].is<bool>()) {
         Config::setInvertScreen(doc["invertscreen"].as<bool>());
     }
     if (doc["invertfanpolarity"].is<bool>()) {
         Config::setFanPolarity(doc["invertfanpolarity"].as<bool>());
-    }
-    if (doc["autofanspeed"].is<uint16_t>()) {
-        Config::setTempControlMode(doc["autofanspeed"].as<uint16_t>());
-    }
-    if (doc["manualFanSpeed"].is<uint16_t>()) {
-        Config::setFanSpeed(doc["manualFanSpeed"].as<uint16_t>());
     }
     if (doc["autoscreenoff"].is<bool>()) {
         Config::setAutoScreenOff(doc["autoscreenoff"].as<bool>());
@@ -352,18 +351,6 @@ esp_err_t PATCH_update_settings(httpd_req_t *req)
         Config::setStratumKeepaliveEnabled(value);
         ESP_LOGI("system", "stratum_keep updated via WebUI: %s", value ? "ENABLED" : "DISABLED");
     }
-    if (doc["pidTargetTemp"].is<uint16_t>()) {
-        Config::setPidTargetTemp(doc["pidTargetTemp"].as<uint16_t>());
-    }
-    if (doc["pidP"].is<float>()) {
-        Config::setPidP((uint16_t) (doc["pidP"].as<float>() * 100.0f));
-    }
-    if (doc["pidI"].is<float>()) {
-        Config::setPidI((uint16_t) (doc["pidI"].as<float>() * 100.0f));
-    }
-    if (doc["pidD"].is<float>()) {
-        Config::setPidD((uint16_t) (doc["pidD"].as<float>() * 100.0f));
-    }
 #ifdef VR_FREQUENCY_ENABLED
     if (doc["vrFrequency"].is<uint32_t>()) {
         uint32_t vrFrequency = doc["vrFrequency"].as<uint32_t>();
@@ -371,32 +358,7 @@ esp_err_t PATCH_update_settings(httpd_req_t *req)
     }
 #endif
 
-    // Per-channel fan settings: fans[0] maps to ch0 NVS keys, fans[1] to ch1 NVS keys
-    if (doc["fans"].is<JsonArray>()) {
-        JsonArray fans = doc["fans"].as<JsonArray>();
-        int ch = 0;
-        for (JsonObject fan : fans) {
-            if (ch > 1) break;
-            if (fan["mode"].is<uint16_t>())
-                Config::setFanMode(ch, fan["mode"].as<uint16_t>());
-            if (fan["manualSpeed"].is<uint16_t>())
-                Config::setFanManualSpeed(ch, fan["manualSpeed"].as<uint16_t>());
-            if (fan["overheatTemp"].is<uint16_t>())
-                Config::setFanOverheatTemp(ch, fan["overheatTemp"].as<uint16_t>());
-            if (fan["pid"].is<JsonObject>()) {
-                JsonObject p = fan["pid"].as<JsonObject>();
-                if (p["targetTemp"].is<uint16_t>())
-                    Config::setFanPidTargetTemp(ch, p["targetTemp"].as<uint16_t>());
-                if (p["p"].is<float>())
-                    Config::setFanPidP(ch, (uint16_t) (p["p"].as<float>() * 100.0f));
-                if (p["i"].is<float>())
-                    Config::setFanPidI(ch, (uint16_t) (p["i"].as<float>() * 100.0f));
-                if (p["d"].is<float>())
-                    Config::setFanPidD(ch, (uint16_t) (p["d"].as<float>() * 100.0f));
-            }
-            ch++;
-        }
-    }
+    applyFanSettingsPatch(fanPatch);
 
     // save stratum settings
     STRATUM_MANAGER->saveSettings(doc);
@@ -409,11 +371,12 @@ esp_err_t PATCH_update_settings(httpd_req_t *req)
     httpd_resp_send_chunk(req, NULL, 0);
 
     // Reload settings after update
-    Board* board = SYSTEM_MODULE.getBoard();
+    POWER_MANAGEMENT_MODULE.lock();
     board->loadSettings();
 
     // Reload fan controller settings (picks up both ch0 and ch1 changes)
     POWER_MANAGEMENT_MODULE.getFanController().loadSettings();
+    POWER_MANAGEMENT_MODULE.unlock();
 
     // reload settings of system module (and display)
     SYSTEM_MODULE.loadSettings();
