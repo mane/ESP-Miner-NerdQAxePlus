@@ -118,6 +118,12 @@ class StratumManager {
 
     virtual int getPoolMode() = 0;
 
+    // Reset stats owned by one pool while m_mutex is already held. Failover
+    // overrides this for its intentionally shared session counters.
+    virtual void resetPoolSessionStats(int pool) {
+        (void) pool;
+    }
+
   public:
     virtual void resetSessionStats() {
         PThreadGuard lock(m_mutex);

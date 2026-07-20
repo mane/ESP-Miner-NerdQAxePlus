@@ -206,6 +206,28 @@ class MiningCoreSafetyContractTest(unittest.TestCase):
         self.assertIn("if (m_ping_history)",
                       _function_body(source, "void PingTask::reset"))
 
+    def test_transport_keepalive_and_ping_callback_state_outlive_async_users(self) -> None:
+        transport_h = _read("main/stratum/stratum_transport.h")
+        transport = _function_body(_read("main/stratum/stratum_transport.cpp"),
+                                   "void StratumTransport::applyKeepAlive_()")
+        ping_h = _read("main/tasks/ping_task.h")
+        ping = _function_body(_read("main/tasks/ping_task.cpp"),
+                              "PingResult PingTask::perform_ping")
+
+        self.assertIn("esp_transport_keep_alive_t m_keepAlive", transport_h)
+        self.assertNotIn("esp_transport_keep_alive_t ka", transport)
+        self.assertIn("&m_keepAlive", transport)
+
+        self.assertIn("char hostname[256]", ping_h)
+        self.assertIn("PingStats m_stats", ping_h)
+        self.assertIn("cbs.cb_args = &m_stats", ping)
+        self.assertIn("snprintf(m_stats.hostname", ping)
+        stop = ping.index("esp_ping_stop(ping)")
+        quiesce = ping.index("vTaskDelay(pdMS_TO_TICKS(PING_TIMEOUT_MS + 200))", stop)
+        delete = ping.index("esp_ping_delete_session(ping)", quiesce)
+        self.assertLess(stop, quiesce)
+        self.assertLess(quiesce, delete)
+
     def test_pool_endpoint_display_uses_locked_value_snapshots(self) -> None:
         manager = _read("main/stratum/stratum_manager.cpp")
         manager_h = _read("main/stratum/stratum_manager.h")

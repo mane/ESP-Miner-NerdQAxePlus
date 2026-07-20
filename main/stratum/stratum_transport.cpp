@@ -171,19 +171,19 @@ void StratumTransport::close()
 
 void StratumTransport::applyKeepAlive_()
 {
-    esp_transport_keep_alive_t ka = {};
-    ka.keep_alive_enable = Config::isStratumKeepaliveEnabled();
-    ka.keep_alive_idle = 10;
-    ka.keep_alive_interval = 5;
-    ka.keep_alive_count = 3;
+    m_keepAlive = {};
+    m_keepAlive.keep_alive_enable = Config::isStratumKeepaliveEnabled();
+    m_keepAlive.keep_alive_idle = 10;
+    m_keepAlive.keep_alive_interval = 5;
+    m_keepAlive.keep_alive_count = 3;
 
-    if (!ka.keep_alive_enable) {
+    if (!m_keepAlive.keep_alive_enable) {
         return;
     }
 
     if (m_use_tls) {
-        esp_transport_ssl_set_keep_alive(m_t, &ka);
+        esp_transport_ssl_set_keep_alive(m_t, &m_keepAlive);
     } else {
-        esp_transport_tcp_set_keep_alive(m_t, &ka);
+        esp_transport_tcp_set_keep_alive(m_t, &m_keepAlive);
     }
 }

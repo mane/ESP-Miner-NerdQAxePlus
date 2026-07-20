@@ -17,6 +17,16 @@
 
 static const char *TAG = "http_v2_dashboard";
 
+// Configuration getters return heap-backed buffers. Explicitly ask
+// ArduinoJson to copy them before those buffers are released.
+static JsonString copiedJsonStringOrEmpty(const char *value)
+{
+    if (!value) {
+        value = "";
+    }
+    return JsonString(value, false);
+}
+
 esp_err_t GET_V2_dashboard(httpd_req_t *req)
 {
     ConGuard g(http_server, req);
@@ -176,12 +186,14 @@ esp_err_t GET_V2_dashboard(httpd_req_t *req)
         char *users[2] = { Config::getStratumUser(), Config::getStratumFallbackUser() };
         int   ports[2] = { (int) Config::getStratumPortNumber(), (int) Config::getStratumFallbackPortNumber() };
 
+        // Managers report both pools in configuration order (primary first,
+        // fallback/secondary second), regardless of which one is active.
         JsonArray pools = stratum["pools"].as<JsonArray>();
         for (int i = 0; i < (int) pools.size() && i < 2; i++) {
             JsonObject pool = pools[i].as<JsonObject>();
-            pool["host"] = urls[i]  ? urls[i]  : "";
+            pool["host"] = copiedJsonStringOrEmpty(urls[i]);
             pool["port"] = ports[i];
-            pool["user"] = users[i] ? users[i] : "";
+            pool["user"] = copiedJsonStringOrEmpty(users[i]);
         }
 
         for (int i = 0; i < 2; i++) {

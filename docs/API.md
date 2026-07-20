@@ -138,6 +138,7 @@ Real-time mining telemetry. Used by the Home page (polled every 2s).
     "poolBalance": 0,
     "pools": [
       {
+        "active": true,
         "host": "solo.ckpool.org",
         "port": 3333,
         "user": "bc1q...",
@@ -151,6 +152,17 @@ Real-time mining telemetry. Used by the Home page (polled every 2s).
         "pingLoss": 0,
         "poolDifficulty": 10000,
         "networkDifficulty": 88000000000000
+      },
+      {
+        "active": false,
+        "host": "fallback.pool.org",
+        "port": 3333,
+        "user": "bc1q...",
+        "connected": false,
+        "activeProtocol": 0,
+        "encrypted": false,
+        "pingRtt": 0,
+        "pingLoss": 0
       }
     ]
   },
@@ -182,6 +194,8 @@ Real-time mining telemetry. Used by the Home page (polled every 2s).
 ```
 
 The `history` object is only present when `ts` query parameter is provided. It contains arrays of hashrate and temperature samples for charting.
+
+`stratum.pools[]` always contains both configured pools in configuration order: index 0 is primary and index 1 is fallback in failover mode or secondary in dual-pool mode. `active` identifies the pool currently mining; failover has exactly one active entry, while both entries are active in dual-pool mode. Because failover session counters are shared, `accepted`, `rejected`, `bestDiff`, `poolDifficulty`, and `networkDifficulty` are reported only on its active entry.
 
 ---
 

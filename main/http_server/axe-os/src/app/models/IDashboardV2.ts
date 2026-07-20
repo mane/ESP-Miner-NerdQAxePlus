@@ -64,6 +64,7 @@ export interface IDashboardV2Thermal {
 }
 
 export interface IDashboardV2Pool {
+    active?: boolean;
     host: string;
     port: number;
     user: string;

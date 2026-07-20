@@ -290,7 +290,7 @@ void System::task() {
             }
 
             uint32_t foundBlocks = STRATUM_MANAGER->getFoundBlocks();
-            if (foundBlocks != lastFoundBlocks && foundBlocks) {
+            if (foundBlocks > lastFoundBlocks) {
                 m_display->showFoundBlockOverlay();
             }
             lastFoundBlocks = foundBlocks;
@@ -314,4 +314,3 @@ void System::task() {
 }
 
 void System::notifyMiningStarted() {}
-

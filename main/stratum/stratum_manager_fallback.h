@@ -79,15 +79,28 @@ class StratumManagerFallback : public StratumManager {
         return m_networkDifficulty;
     }
 
-    virtual void resetSessionStats() override {
-        PThreadGuard lock(m_mutex);
-        m_foundBlocks = 0;
+    virtual void resetPoolSessionStats(int pool) override {
+        if (pool < 0 || pool >= 2) {
+            return;
+        }
+
+        // Failover mode intentionally shares session counters between pools.
         m_accepted = 0;
         m_rejected = 0;
         m_bestSessionDiff = 0;
         suffixString(0, m_bestSessionDiffString, DIFF_STRING_SIZE, 0);
+        if (m_stratumTasks[pool]) {
+            m_stratumTasks[pool]->m_poolErrors = 0;
+        }
+    }
+
+    virtual void resetSessionStats() override {
+        PThreadGuard lock(m_mutex);
+        // Preserve the explicit/manual reset contract: it also clears the
+        // number of blocks found during this boot.
+        m_foundBlocks = 0;
         for (int i = 0; i < 2; i++) {
-            if (m_stratumTasks[i]) m_stratumTasks[i]->m_poolErrors = 0;
+            resetPoolSessionStats(i);
         }
     }
 

@@ -21,6 +21,12 @@ public:
 
 private:
     bool m_use_tls;
+
+    // esp_transport_*_set_keep_alive() retains this pointer and reads it
+    // during connect, so the configuration must live as long as the
+    // transport object rather than on applyKeepAlive_()'s stack.
+    esp_transport_keep_alive_t m_keepAlive = {};
+
     void applyKeepAlive_();
     void setNoDelay_();
 

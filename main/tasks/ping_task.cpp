@@ -1,3 +1,5 @@
+#include <stdio.h>
+
 #include "ping_task.h"
 #include "esp_log.h"
 #include "global_state.h"
@@ -102,10 +104,13 @@ PingResult PingTask::perform_ping(const char *ip_str, const char *hostname_str)
         return result;
     }
 
-    PingStats stats{};
-    stats.hostname = hostname_str;
-    stats.min_rtt = 1e6;
-    stats.tag = m_tag;
+    // The ping worker can still finish an in-flight callback after stop is
+    // requested. Use object-owned callback state, including a hostname copy,
+    // so the callback never observes stack storage that has gone out of scope.
+    m_stats = {};
+    snprintf(m_stats.hostname, sizeof(m_stats.hostname), "%s", hostname_str ? hostname_str : "?");
+    m_stats.min_rtt = 1e6;
+    m_stats.tag = m_tag;
 
     // Configure ping session
     esp_ping_config_t config = ESP_PING_DEFAULT_CONFIG();
@@ -116,7 +121,7 @@ PingResult PingTask::perform_ping(const char *ip_str, const char *hostname_str)
 
     // Set callback to accumulate successful replies
     esp_ping_callbacks_t cbs = {};
-    cbs.cb_args = &stats;
+    cbs.cb_args = &m_stats;
     cbs.on_ping_success = on_ping_task_success;
 
     // Configure and start ping session
@@ -155,6 +160,12 @@ PingResult PingTask::perform_ping(const char *ip_str, const char *hostname_str)
     // Stop session
     esp_ping_stop(ping);
 
+    // esp_ping_stop() is observed by the worker at the top of its loop. Let
+    // a receive already in progress (bounded by PING_TIMEOUT_MS) and its
+    // callback finish before reading callback-owned state or deleting the
+    // session it still references.
+    vTaskDelay(pdMS_TO_TICKS(PING_TIMEOUT_MS + 200));
+
     // Final verification: check if any replies were missing
     esp_ping_get_profile(ping, ESP_PING_PROF_REPLY, &replies, sizeof(replies));
     esp_ping_get_profile(ping, ESP_PING_PROF_REQUEST, &sent, sizeof(sent));
@@ -163,13 +174,13 @@ PingResult PingTask::perform_ping(const char *ip_str, const char *hostname_str)
     esp_ping_delete_session(ping);
 
     // Store results if valid replies exist
-    if (stats.replies > 0) {
-        double round_avg = (double) stats.total_time_ms / stats.replies;
+    if (m_stats.replies > 0) {
+        double round_avg = (double) m_stats.total_time_ms / m_stats.replies;
         result.success = true;
-        result.replies = stats.replies;
+        result.replies = m_stats.replies;
         result.avg_rtt_ms = round_avg;
-        result.min_rtt_ms = stats.min_rtt;
-        result.max_rtt_ms = stats.max_rtt;
+        result.min_rtt_ms = m_stats.min_rtt;
+        result.max_rtt_ms = m_stats.max_rtt;
     }
 
     return result;

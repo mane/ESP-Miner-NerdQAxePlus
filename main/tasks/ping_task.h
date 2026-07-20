@@ -25,7 +25,7 @@ struct PingStats
     uint32_t total_time_ms;
     double min_rtt;
     double max_rtt;
-    const char *hostname;
+    char hostname[256];
     bool header_shown;
     const char* tag;
 };
@@ -40,6 +40,11 @@ class PingTask {
     int m_history_count = 0;
     const char* m_tag = nullptr;
     StratumManager *m_manager = nullptr;
+
+    // esp_ping may finish an in-flight receive callback after stop is
+    // requested. Keep both the callback context and its hostname in object
+    // storage so neither can outlive a perform_ping() stack frame.
+    PingStats m_stats = {};
 
     void record_ping_result(uint16_t sent, uint16_t received);
     int init_ping_history();

@@ -68,6 +68,7 @@ import {
   DEFAULT_POOL_ICON_URL,
   DEFAULT_EXTERNAL_POOL_ICON_URL,
   } from './home.quicklinks';
+import { dashboardPoolRejectRate, selectDashboardPool } from './home.pool-selection';
 
 // Tile helpers (keep this component as a thin container)
 import { maxAsicTemp,
@@ -1899,10 +1900,7 @@ private setAxisPadding(cfg: any, persist: boolean = false): void {
     const stratum = this._info?.stratum;
     if (!this._info || !stratum) return {} as any;
 
-    if (i === undefined) {
-      return stratum.pools[0] ?? {} as any;
-    }
-    return stratum.pools[i] ?? {} as any;
+    return selectDashboardPool(stratum.pools, i) ?? {} as any;
   }
 
   private clearChartHistoryInternal(updateChartNow: boolean): void {
@@ -1978,26 +1976,8 @@ private setAxisPadding(cfg: any, persist: boolean = false): void {
   // this happens when adding new charts
 
   public rejectRate(id?: number): number {
-  // Template can call this before the first info payload arrived.
-  // Be defensive to avoid breaking the whole dashboard render.
-  const pools = this._info?.stratum?.pools;
-  if (!Array.isArray(pools) || pools.length === 0) return 0;
-
-  // In some template contexts (e.g. single pool tile) `idx` may be undefined.
-  // For UI consistency we default to the PRIMARY pool (index 0), which also matches the Shares card.
-  const idx = (typeof id === 'number' && Number.isFinite(id)) ? id : 0;
-
-  const pool = pools[idx];
-  if (!pool) return 0;
-
-  const rejected = Number(pool.rejected ?? 0);
-  const accepted = Number(pool.accepted ?? 0);
-
-  const total = accepted + rejected;
-  if (!total) return 0;
-
-  return (rejected / total) * 100;
-}
+    return dashboardPoolRejectRate(this._info?.stratum?.pools, id);
+  }
   public openResetStatsDialog(template: any): void {
     this.dialogService.open(template);
   }

@@ -19,6 +19,16 @@ static const char *TAG = "http_system";
 
 #define VR_FREQUENCY_ENABLED
 
+// Configuration getters return heap-backed buffers. Explicitly ask
+// ArduinoJson to copy them before those buffers are released.
+static JsonString copiedJsonStringOrEmpty(const char *value)
+{
+    if (!value) {
+        value = "";
+    }
+    return JsonString(value, false);
+}
+
 /* Simple handler for getting system handler */
 esp_err_t GET_system_info(httpd_req_t *req)
 {
@@ -212,10 +222,10 @@ esp_err_t GET_system_info(httpd_req_t *req)
     doc["fallbackStratumProtocol"] = Config::getFallbackStratumProtocol();
     {
         char *sv2_auth = Config::getSV2AuthorityPubkey();
-        doc["sv2AuthorityPubkey"] = sv2_auth ? sv2_auth : "";
+        doc["sv2AuthorityPubkey"] = copiedJsonStringOrEmpty(sv2_auth);
         safe_free(sv2_auth);
         char *fb_sv2_auth = Config::getFallbackSV2AuthorityPubkey();
-        doc["fallbackSv2AuthorityPubkey"] = fb_sv2_auth ? fb_sv2_auth : "";
+        doc["fallbackSv2AuthorityPubkey"] = copiedJsonStringOrEmpty(fb_sv2_auth);
         safe_free(fb_sv2_auth);
     }
     doc["sv2ChannelType"]     = Config::getSV2ChannelType();

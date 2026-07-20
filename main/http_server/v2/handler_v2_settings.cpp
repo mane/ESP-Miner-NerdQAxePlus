@@ -22,6 +22,16 @@ static constexpr uint16_t HASHRATE_GOVERNOR_LOW_VOLTAGE_MAX_MHZ = 500;
 static constexpr uint16_t HASHRATE_GOVERNOR_HIGH_FREQUENCY_MIN_MV = 1300;
 static constexpr float HASHRATE_GOVERNOR_MAX_POWER_W = 69.0f;
 
+// Configuration getters return heap-backed buffers. Explicitly ask
+// ArduinoJson to copy them before those buffers are released.
+static JsonString copiedJsonStringOrEmpty(const char *value)
+{
+    if (!value) {
+        value = "";
+    }
+    return JsonString(value, false);
+}
+
 static uint16_t normalizedGovernorMaxFrequency(Board *board, uint16_t baseFrequency,
                                                 uint16_t coreVoltageMillis)
 {
@@ -142,14 +152,14 @@ esp_err_t GET_V2_settings(httpd_req_t *req)
             JsonObject pool = pools.add<JsonObject>();
             char *url  = Config::getStratumURL();
             char *user = Config::getStratumUser();
-            pool["url"]              = url  ? url  : "";
+            pool["url"]              = copiedJsonStringOrEmpty(url);
             pool["port"]             = Config::getStratumPortNumber();
-            pool["user"]             = user ? user : "";
+            pool["user"]             = copiedJsonStringOrEmpty(user);
             pool["enonceSubscribe"]  = Config::isStratumEnonceSubscribe();
             pool["tls"]              = Config::isStratumTLS();
             pool["protocol"]         = Config::getStratumProtocol();
             char *sv2 = Config::getSV2AuthorityPubkey();
-            pool["sv2AuthorityPubkey"] = sv2 ? sv2 : "";
+            pool["sv2AuthorityPubkey"] = copiedJsonStringOrEmpty(sv2);
             safe_free(sv2);
             pool["sv2ChannelType"]   = Config::getSV2ChannelType();
             pool["coinbaseVerifyMode"]  = Config::getCoinbaseVerifyMode(0);
@@ -164,14 +174,14 @@ esp_err_t GET_V2_settings(httpd_req_t *req)
             JsonObject pool = pools.add<JsonObject>();
             char *url  = Config::getStratumFallbackURL();
             char *user = Config::getStratumFallbackUser();
-            pool["url"]              = url  ? url  : "";
+            pool["url"]              = copiedJsonStringOrEmpty(url);
             pool["port"]             = Config::getStratumFallbackPortNumber();
-            pool["user"]             = user ? user : "";
+            pool["user"]             = copiedJsonStringOrEmpty(user);
             pool["enonceSubscribe"]  = Config::isStratumFallbackEnonceSubscribe();
             pool["tls"]              = Config::isStratumFallbackTLS();
             pool["protocol"]         = Config::getFallbackStratumProtocol();
             char *sv2 = Config::getFallbackSV2AuthorityPubkey();
-            pool["sv2AuthorityPubkey"] = sv2 ? sv2 : "";
+            pool["sv2AuthorityPubkey"] = copiedJsonStringOrEmpty(sv2);
             safe_free(sv2);
             pool["sv2ChannelType"]   = Config::getFallbackSV2ChannelType();
             pool["coinbaseVerifyMode"]  = Config::getCoinbaseVerifyMode(1);
@@ -206,8 +216,8 @@ esp_err_t GET_V2_settings(httpd_req_t *req)
     {
         char *hostname = Config::getHostname();
         char *ssid     = Config::getWifiSSID();
-        doc["hostname"] = hostname ? hostname : "";
-        doc["ssid"]     = ssid     ? ssid     : "";
+        doc["hostname"] = copiedJsonStringOrEmpty(hostname);
+        doc["ssid"]     = copiedJsonStringOrEmpty(ssid);
         free(hostname);
         free(ssid);
     }
@@ -216,7 +226,7 @@ esp_err_t GET_V2_settings(httpd_req_t *req)
     {
         doc["mempoolCustom"] = Config::isMempoolCustom();
         char *mempoolUrl = Config::getMempoolUrl();
-        doc["mempoolUrl"] = mempoolUrl ? mempoolUrl : "";
+        doc["mempoolUrl"] = copiedJsonStringOrEmpty(mempoolUrl);
         free(mempoolUrl);
     }
 
