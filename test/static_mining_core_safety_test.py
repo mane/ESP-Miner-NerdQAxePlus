@@ -220,11 +220,14 @@ class MiningCoreSafetyContractTest(unittest.TestCase):
 
         self.assertIn("char hostname[256]", ping_h)
         self.assertIn("PingStats m_stats", ping_h)
+        self.assertIn("StaticSemaphore_t m_ping_done_storage", ping_h)
         self.assertIn("cbs.cb_args = &m_stats", ping)
         self.assertIn("snprintf(m_stats.hostname", ping)
+        self.assertIn("cbs.on_ping_end = on_ping_task_end", ping)
         stop = ping.index("esp_ping_stop(ping)")
-        quiesce = ping.index("vTaskDelay(pdMS_TO_TICKS(PING_TIMEOUT_MS + 200))", stop)
+        quiesce = ping.index("xSemaphoreTake(m_ping_done, portMAX_DELAY)", stop)
         delete = ping.index("esp_ping_delete_session(ping)", quiesce)
+        self.assertNotIn("PING_TIMEOUT_MS + 200", ping)
         self.assertLess(stop, quiesce)
         self.assertLess(quiesce, delete)
 

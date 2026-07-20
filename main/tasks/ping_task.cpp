@@ -92,6 +92,14 @@ static void on_ping_task_success(esp_ping_handle_t hdl, void *args)
     }
 }
 
+static void on_ping_task_end(esp_ping_handle_t, void *args)
+{
+    PingStats *s = static_cast<PingStats*>(args);
+    if (s && s->done) {
+        xSemaphoreGive(s->done);
+    }
+}
+
 // Run a ping session using resolved IP from STRATUM_MANAGER
 PingResult PingTask::perform_ping(const char *ip_str, const char *hostname_str)
 {
@@ -107,10 +115,16 @@ PingResult PingTask::perform_ping(const char *ip_str, const char *hostname_str)
     // The ping worker can still finish an in-flight callback after stop is
     // requested. Use object-owned callback state, including a hostname copy,
     // so the callback never observes stack storage that has gone out of scope.
+    // A completed previous session may have left the binary semaphore set.
+    // Drain it before associating it with this session.
+    while (xSemaphoreTake(m_ping_done, 0) == pdTRUE) {
+    }
+
     m_stats = {};
     snprintf(m_stats.hostname, sizeof(m_stats.hostname), "%s", hostname_str ? hostname_str : "?");
     m_stats.min_rtt = 1e6;
     m_stats.tag = m_tag;
+    m_stats.done = m_ping_done;
 
     // Configure ping session
     esp_ping_config_t config = ESP_PING_DEFAULT_CONFIG();
@@ -123,6 +137,7 @@ PingResult PingTask::perform_ping(const char *ip_str, const char *hostname_str)
     esp_ping_callbacks_t cbs = {};
     cbs.cb_args = &m_stats;
     cbs.on_ping_success = on_ping_task_success;
+    cbs.on_ping_end = on_ping_task_end;
 
     // Configure and start ping session
     esp_ping_handle_t ping = NULL;
@@ -160,11 +175,10 @@ PingResult PingTask::perform_ping(const char *ip_str, const char *hostname_str)
     // Stop session
     esp_ping_stop(ping);
 
-    // esp_ping_stop() is observed by the worker at the top of its loop. Let
-    // a receive already in progress (bounded by PING_TIMEOUT_MS) and its
-    // callback finish before reading callback-owned state or deleting the
-    // session it still references.
-    vTaskDelay(pdMS_TO_TICKS(PING_TIMEOUT_MS + 200));
+    // on_ping_end runs after every success/timeout callback. Waiting for it is
+    // the completion barrier that makes the callback-owned statistics stable
+    // before they are read and the session is deleted.
+    xSemaphoreTake(m_ping_done, portMAX_DELAY);
 
     // Final verification: check if any replies were missing
     esp_ping_get_profile(ping, ESP_PING_PROF_REPLY, &replies, sizeof(replies));

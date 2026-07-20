@@ -42,4 +42,22 @@ describe('home pool selection', () => {
     expect(selectDashboardPool([])).toBeUndefined();
     expect(dashboardPoolRejectRate(undefined)).toBe(0);
   });
+
+  it('accepts omitted statistics on an inactive fallback pool', () => {
+    const inactive: IDashboardV2Pool = {
+      active: false,
+      host: 'primary.example',
+      port: 3333,
+      user: 'miner',
+      connected: false,
+      activeProtocol: 0,
+      encrypted: false,
+      pingRtt: 0,
+      pingLoss: 1,
+    };
+    const active = pool(true, 12, 0);
+
+    expect(selectDashboardPool([inactive, active])).toBe(active);
+    expect(dashboardPoolRejectRate([inactive, active])).toBe(0);
+  });
 });

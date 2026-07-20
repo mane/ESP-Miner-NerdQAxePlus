@@ -1,5 +1,6 @@
 from pathlib import Path
 import re
+import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -43,3 +44,14 @@ def test_alert_test_uses_same_network_allow_list_as_alert_update() -> None:
 
 def test_reset_stats_requires_otp_because_it_mutates_runtime_state() -> None:
     assert_has_call("main/http_server/handler_system.cpp", "POST_reset_stats", "validateOTP(req")
+
+
+def load_tests(loader, discovered, pattern):
+    del loader, pattern
+    suite = unittest.TestSuite(discovered)
+    suite.addTests(
+        unittest.FunctionTestCase(function)
+        for name, function in sorted(globals().items())
+        if name.startswith("test_") and callable(function)
+    )
+    return suite

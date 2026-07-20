@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-and-release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
     strategy:
@@ -20,9 +20,29 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v5
+      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
         submodules: recursive
+
+    - name: Set up Node.js
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: 20.16.0
+        cache: npm
+        cache-dependency-path: main/http_server/axe-os/package-lock.json
+
+    - name: Run firmware safety tests
+      run: python3 -m unittest discover -s test -p '*test.py'
+
+    - name: Install Web UI dependencies
+      working-directory: main/http_server/axe-os
+      run: npm ci
+
+    - name: Run Web UI tests
+      working-directory: main/http_server/axe-os
+      run: |
+        npm run test:build-tools
+        npm test -- --watch=false --browsers=ChromeHeadless
 
     - name: Get Version Tag
       id: version_tag
@@ -46,6 +66,10 @@ jobs:
         echo "${version}" > version.txt
         echo "VERSION_TAG=${version}"
 
+    - name: Build versioned Web UI
+      working-directory: main/http_server/axe-os
+      run: npm run build
+
     - name: Install GitHub CLI
       run: |
         sudo apt-get update -y
@@ -65,14 +89,14 @@ jobs:
     - name: Set Target
       run: |
         # Run the Docker container to set ESP32-S3 target
-        docker run --rm --user root -e BOARD=${{ matrix.board }} -e VERSION_TAG -e COMMIT_HASH -v "$PWD:/home/builder/project" \
-        shufps/esp-idf-builder:0.0.1 idf.py set-target esp32s3
+        docker run --rm --user root -e BOARD=${{ matrix.board }} -e VERSION_TAG -e COMMIT_HASH -e GITHUB_ACTIONS=true -v "$PWD:/home/builder/project" \
+        shufps/esp-idf-builder:0.0.1@sha256:08101278a9ab09568cda93cac5a4927a897cbe08b9008253f9472ca9d17d0917 idf.py set-target esp32s3
 
     - name: Compile Binaries
       run: |
         # Run the Docker container to build the project
-        docker run --rm --user root -e BOARD=${{ matrix.board }} -e VERSION_TAG -e COMMIT_HASH -v "$PWD:/home/builder/project" \
-        shufps/esp-idf-builder:0.0.1 idf.py build
+        docker run --rm --user root -e BOARD=${{ matrix.board }} -e VERSION_TAG -e COMMIT_HASH -e GITHUB_ACTIONS=true -v "$PWD:/home/builder/project" \
+        shufps/esp-idf-builder:0.0.1@sha256:08101278a9ab09568cda93cac5a4927a897cbe08b9008253f9472ca9d17d0917 idf.py build
 
     - name: Verify Web release artifacts
       run: |
@@ -85,7 +109,7 @@ jobs:
     - name: Merge Binaries
       run: |
         docker run --rm --user root -v "$PWD:/home/builder/project" \
-        shufps/esp-idf-builder:0.0.1 esptool.py --chip esp32s3 merge_bin --flash_mode dio --flash_size 16MB --flash_freq 80m \
+        shufps/esp-idf-builder:0.0.1@sha256:08101278a9ab09568cda93cac5a4927a897cbe08b9008253f9472ca9d17d0917 esptool.py --chip esp32s3 merge_bin --flash_mode dio --flash_size 16MB --flash_freq 80m \
         0x0 build/bootloader/bootloader.bin \
         0x8000 build/partition_table/partition-table.bin \
         0x10000 build/esp-miner.bin \
@@ -100,7 +124,7 @@ jobs:
 
     - name: Upload factory binary
       if: env.RELEASE_EXISTS == 'false'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
       with:
         name: esp-miner-factory-${{ matrix.label }}-${{ env.VERSION_TAG }}.bin
         path: esp-miner-factory-${{ matrix.label }}-${{ env.VERSION_TAG }}.bin
@@ -108,7 +132,7 @@ jobs:
 
     - name: Upload BIN firmware
       if: env.RELEASE_EXISTS == 'false'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
       with:
         name: esp-miner-${{ matrix.label }}.bin
         path: build/esp-miner-${{ matrix.label }}.bin
@@ -116,7 +140,7 @@ jobs:
 
     - name: Upload www.bin (only once)
       if: env.RELEASE_EXISTS == 'false' && matrix.board == 'NERDQAXEPLUS'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
       with:
         name: www.bin
         path: build/www.bin
@@ -144,7 +168,7 @@ jobs:
 
     - name: Upload to Existing Release
       if: env.RELEASE_EXISTS == 'true'
-      uses: softprops/action-gh-release@v3
+      uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
       with:
         files: |
           esp-miner-factory-${{ matrix.label }}-${{ env.VERSION_TAG }}.bin

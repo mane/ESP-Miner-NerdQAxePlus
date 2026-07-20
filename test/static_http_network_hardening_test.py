@@ -1,4 +1,5 @@
 from pathlib import Path
+import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -177,3 +178,14 @@ def test_mdns_setup_rolls_back_partial_initialization() -> None:
     assert "mdns_hostname_set" in body
     assert "mdns_instance_name_set" in body
     assert body.count("mdns_free()") >= 3
+
+
+def load_tests(loader, discovered, pattern):
+    del loader, pattern
+    suite = unittest.TestSuite(discovered)
+    suite.addTests(
+        unittest.FunctionTestCase(function)
+        for name, function in sorted(globals().items())
+        if name.startswith("test_") and callable(function)
+    )
+    return suite

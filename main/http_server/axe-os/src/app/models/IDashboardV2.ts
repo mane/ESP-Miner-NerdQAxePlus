@@ -71,13 +71,13 @@ export interface IDashboardV2Pool {
     connected: boolean;
     activeProtocol: number;
     encrypted: boolean;
-    accepted: number;
-    rejected: number;
-    bestDiff: number;
+    accepted?: number;
+    rejected?: number;
+    bestDiff?: number;
     pingRtt: number;
     pingLoss: number;
     verifyBlocked?: string;
-    poolDifficulty: number;
+    poolDifficulty?: number;
     networkDifficulty?: number;
     poolDiffErr?: boolean;
 }

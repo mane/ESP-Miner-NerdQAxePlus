@@ -1,4 +1,5 @@
 from pathlib import Path
+import unittest
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -30,3 +31,14 @@ def test_wifi_scan_timeout_resumes_sta_reconnect_attempts() -> None:
     assert "s_is_scanning = false;" in timeout_branch
     assert "s_scan_suppress_reconnect = false;" in timeout_branch
     assert "if (s_has_ssid) esp_wifi_connect();" in timeout_branch
+
+
+def load_tests(loader, discovered, pattern):
+    del loader, pattern
+    suite = unittest.TestSuite(discovered)
+    suite.addTests(
+        unittest.FunctionTestCase(function)
+        for name, function in sorted(globals().items())
+        if name.startswith("test_") and callable(function)
+    )
+    return suite

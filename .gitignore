@@ -1,7 +1,6 @@
 # Configuration files
 sdkconfig
 sdkconfig.old
-dependencies.lock
 
 # Visual Studio Code
 .vscode/*

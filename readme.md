@@ -120,12 +120,12 @@ fi
 docker run --rm --user root -e BOARD=NERDQAXEPLUS \
   -e VERSION_TAG -e COMMIT_HASH \
   -v "$PWD":/home/builder/project \
-  shufps/esp-idf-builder:0.0.1 idf.py set-target esp32s3
+  shufps/esp-idf-builder:0.0.1@sha256:08101278a9ab09568cda93cac5a4927a897cbe08b9008253f9472ca9d17d0917 idf.py set-target esp32s3
 
 docker run --rm --user root -e BOARD=NERDQAXEPLUS \
   -e VERSION_TAG -e COMMIT_HASH \
   -v "$PWD":/home/builder/project \
-  shufps/esp-idf-builder:0.0.1 idf.py build
+  shufps/esp-idf-builder:0.0.1@sha256:08101278a9ab09568cda93cac5a4927a897cbe08b9008253f9472ca9d17d0917 idf.py build
 ```
 
 ### Merge a factory image

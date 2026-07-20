@@ -1,5 +1,6 @@
 from pathlib import Path
 import re
+import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,3 +35,14 @@ def test_otp_session_interceptor_only_attaches_to_same_origin_requests() -> None
     predicate_pos = interceptor.find("shouldAttachOtpSession")
     header_pos = interceptor.find("X-OTP-Session")
     assert predicate_pos != -1 and header_pos != -1 and predicate_pos < header_pos
+
+
+def load_tests(loader, discovered, pattern):
+    del loader, pattern
+    suite = unittest.TestSuite(discovered)
+    suite.addTests(
+        unittest.FunctionTestCase(function)
+        for name, function in sorted(globals().items())
+        if name.startswith("test_") and callable(function)
+    )
+    return suite

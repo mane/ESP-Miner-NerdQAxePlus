@@ -3,6 +3,9 @@
 #include <stdint.h>
 #include <pthread.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 class StratumManager;
 
 struct PingHistory {
@@ -28,6 +31,7 @@ struct PingStats
     char hostname[256];
     bool header_shown;
     const char* tag;
+    SemaphoreHandle_t done;
 };
 
 class PingTask {
@@ -45,6 +49,8 @@ class PingTask {
     // requested. Keep both the callback context and its hostname in object
     // storage so neither can outlive a perform_ping() stack frame.
     PingStats m_stats = {};
+    StaticSemaphore_t m_ping_done_storage = {};
+    SemaphoreHandle_t m_ping_done = nullptr;
 
     void record_ping_result(uint16_t sent, uint16_t received);
     int init_ping_history();
@@ -53,6 +59,8 @@ class PingTask {
 
   public:
     PingTask(StratumManager *manager, int pool) : m_pool(pool), m_manager(manager) {
+        m_ping_done = xSemaphoreCreateBinaryStatic(&m_ping_done_storage);
+        configASSERT(m_ping_done != nullptr);
         if (!pool) {
             m_tag = "ping task (pri)";
         } else {

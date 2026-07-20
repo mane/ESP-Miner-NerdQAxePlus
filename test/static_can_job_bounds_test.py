@@ -1,4 +1,5 @@
 from pathlib import Path
+import unittest
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -52,3 +53,14 @@ def test_can_master_drops_out_of_range_nonce_job_id_before_lookup() -> None:
     assert guard_pos < lookup_pos
     assert "out-of-range job_id" in body[guard_pos:lookup_pos]
     assert "return;" in body[guard_pos:lookup_pos]
+
+
+def load_tests(loader, discovered, pattern):
+    del loader, pattern
+    suite = unittest.TestSuite(discovered)
+    suite.addTests(
+        unittest.FunctionTestCase(function)
+        for name, function in sorted(globals().items())
+        if name.startswith("test_") and callable(function)
+    )
+    return suite
