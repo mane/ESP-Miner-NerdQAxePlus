@@ -1,5 +1,6 @@
 #include "can_slave_task.h"
 
+#include <pthread.h>
 #include <string.h>
 #include "driver/twai.h"
 #include "esp_log.h"
@@ -35,6 +36,12 @@ volatile uint8_t g_can_slave_id = CAN_SLAVE_ID_UNASSIGNED;
 static EXT_RAM_BSS_ATTR BM1368_job  s_jobs[256];
 static EXT_RAM_BSS_ATTR uint32_t    s_pool_diffs[256];
 static EXT_RAM_BSS_ATTR bool        s_job_valid[256];
+static pthread_mutex_t              s_job_store_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// One-shot permit: every raw job must consume a version-mask command that the
+// ASIC UART accepted immediately beforehand. A failed command leaves it false,
+// so the next master cycle must retry the mask before work can be published.
+static bool s_version_mask_ready = false;
 
 // Recover bm_job LE fields from BM1368_job BE fields and call test_nonce_value().
 static double calc_nonce_diff(const BM1368_job *j, uint32_t nonce, uint32_t rolled_version)
@@ -196,12 +203,14 @@ static void handle_settings_cmd(const uint8_t *p, size_t len)
             send_config = true;
             break;
         case CAN_CMD_SET_VERSION_MASK:
+            s_version_mask_ready = false;
             if (len >= 1 + sizeof(uint32_t)) {
                 uint32_t version_mask;
                 memcpy(&version_mask, p + 1, sizeof(version_mask));
                 Asic *asics = SYSTEM_MODULE.getBoard()->getAsics();
                 if (asics) {
                     if (asics->setVersionMask(version_mask)) {
+                        s_version_mask_ready = true;
                         ESP_LOGI(TAG, "CMD SET_VERSION_MASK %08lX → applied", (unsigned long) version_mask);
                     } else {
                         ESP_LOGE(TAG, "CMD SET_VERSION_MASK %08lX failed: ASIC UART TX error",
@@ -282,6 +291,7 @@ void can_slave_task(void *pvParameters)
             ESP_LOGW(TAG, "No job for 10s → re-negotiating");
             state          = SLAVE_UNASSIGNED;
             g_can_slave_id = CAN_SLAVE_ID_UNASSIGNED;
+            s_version_mask_ready = false;
             last_hello     = now - pdMS_TO_TICKS(1000);
             in_frame = false;
             buf_len  = 0;
@@ -303,6 +313,7 @@ void can_slave_task(void *pvParameters)
             ESP_LOGI(TAG, "Master boot detected → re-negotiating");
             state          = SLAVE_UNASSIGNED;
             g_can_slave_id = CAN_SLAVE_ID_UNASSIGNED;
+            s_version_mask_ready = false;
             last_hello     = now - pdMS_TO_TICKS(1000);
             in_frame = false;
             buf_len  = 0;
@@ -316,6 +327,7 @@ void can_slave_task(void *pvParameters)
                 g_can_slave_id = id;
                 state    = SLAVE_ACTIVE;
                 last_job = now;
+                s_version_mask_ready = false;
                 send_slave_config(id);
                 // Persist master MAC so we can detect fleet changes on next boot.
                 // ASSIGN comes from master, master MAC is not in this frame —
@@ -363,6 +375,16 @@ void can_slave_task(void *pvParameters)
         if (seq == CAN_SEQ_LAST) {
             in_frame = false;
 
+            // Consume the permit even for a malformed/failed job. The master
+            // sends a fresh mask before every raw job, preserving fail-closed
+            // behavior without adding an ACK to the CAN protocol.
+            const bool version_mask_ready = s_version_mask_ready;
+            s_version_mask_ready = false;
+            if (!version_mask_ready) {
+                ESP_LOGE(TAG, "RX JOB dropped: no successfully applied version mask");
+                continue;
+            }
+
             if (buf_len != JOB_PAYLOAD_LEN) {
                 ESP_LOGW(TAG, "unexpected job size %d (expected %d)", buf_len, JOB_PAYLOAD_LEN);
                 continue;
@@ -373,15 +395,21 @@ void can_slave_task(void *pvParameters)
             memcpy(&pool_diff, buf + sizeof(BM1368_job), sizeof(uint32_t));
 
             ESP_LOGI(TAG, "RX JOB job_id=%02X pool_diff=%lu → sendRawJob", job->job_id, pool_diff);
+            pthread_mutex_lock(&s_job_store_mutex);
             s_job_valid[job->job_id] = false;
-            if (!asics->sendRawJob(job)) {
+            const bool job_sent = asics->sendRawJob(job);
+            if (job_sent) {
+                s_jobs[job->job_id]       = *job;
+                s_pool_diffs[job->job_id] = pool_diff;
+                s_job_valid[job->job_id]  = true;
+            }
+            pthread_mutex_unlock(&s_job_store_mutex);
+
+            if (!job_sent) {
                 ESP_LOGE(TAG, "RX JOB job_id=%02X dropped: ASIC UART TX failed", job->job_id);
                 continue;
             }
 
-            s_jobs[job->job_id]       = *job;
-            s_pool_diffs[job->job_id] = pool_diff;
-            s_job_valid[job->job_id]  = true;
             last_job = now; // reset timeout only after a successful ASIC TX
         }
     }
@@ -422,11 +450,20 @@ void can_slave_result_task(void *pvParameters)
             continue;
         }
 
-        if (s_job_valid[result.job_id]) {
+        BM1368_job job_snapshot = {};
+        uint32_t pool_diff = 0;
+        pthread_mutex_lock(&s_job_store_mutex);
+        const bool job_valid = s_job_valid[result.job_id];
+        if (job_valid) {
+            job_snapshot = s_jobs[result.job_id];
+            pool_diff = s_pool_diffs[result.job_id];
+        }
+        pthread_mutex_unlock(&s_job_store_mutex);
+
+        if (job_valid) {
             uint32_t version;
-            memcpy(&version, s_jobs[result.job_id].version, 4);
-            double diff = calc_nonce_diff(&s_jobs[result.job_id], result.nonce, result.rolled_version | version);
-            uint32_t pool_diff = s_pool_diffs[result.job_id];
+            memcpy(&version, job_snapshot.version, 4);
+            double diff = calc_nonce_diff(&job_snapshot, result.nonce, result.rolled_version | version);
 
             if (diff < pool_diff) {
                 ESP_LOGI(TAG, "NONCE job=%02X nonce=%08lX diff=%.1f/%lu → drop",

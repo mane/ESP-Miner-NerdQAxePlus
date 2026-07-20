@@ -445,8 +445,6 @@ void create_jobs_task(void *pvParameters)
 
     bool has_active_version_mask = false;
     uint32_t active_version_mask = 0;
-    bool has_active_slave_version_mask[CAN_SLAVE_MAX] = {false};
-    uint32_t active_slave_version_mask[CAN_SLAVE_MAX] = {0};
 
     int lastJobInterval = initial_job_interval;
 
@@ -560,7 +558,6 @@ void create_jobs_task(void *pvParameters)
         // --- CAN: send raw job to each slave ---
         for (uint8_t slave = 0; slave < CAN_SLAVE_MAX; slave++) {
             if (!can_master_is_slave_active(slave)) {
-                has_active_slave_version_mask[slave] = false;
                 continue;
             }
             uint32_t e2 = can_make_extranonce2(slave, slave_counters[slave]);
@@ -584,17 +581,17 @@ void create_jobs_task(void *pvParameters)
                     free_bm_job(slave_job);
                     continue;
                 }
-                if (!has_active_slave_version_mask[slave] || active_slave_version_mask[slave] != slave_job->version_mask) {
-                    uint8_t payload[1 + sizeof(slave_job->version_mask)] = {CAN_CMD_SET_VERSION_MASK};
-                    memcpy(payload + 1, &slave_job->version_mask, sizeof(slave_job->version_mask));
-                    if (!can_send_settings_cmd(slave, payload, sizeof(payload))) {
-                        ESP_LOGE(TAG, "(%s) Dropping CAN job for slave %u: version-mask TX failed",
-                                 active_pool_str, (unsigned)slave);
-                        free_bm_job(slave_job);
-                        continue;
-                    }
-                    active_slave_version_mask[slave] = slave_job->version_mask;
-                    has_active_slave_version_mask[slave] = true;
+                // This command is intentionally sent before every job. TWAI
+                // queues frames in call order; waiting for the settings enqueue
+                // to succeed before queuing the raw job makes a failed mask
+                // retry on the next cycle without trusting a master-side cache.
+                uint8_t payload[1 + sizeof(slave_job->version_mask)] = {CAN_CMD_SET_VERSION_MASK};
+                memcpy(payload + 1, &slave_job->version_mask, sizeof(slave_job->version_mask));
+                if (!can_send_settings_cmd(slave, payload, sizeof(payload))) {
+                    ESP_LOGE(TAG, "(%s) Dropping CAN job for slave %u: version-mask TX failed",
+                             active_pool_str, (unsigned)slave);
+                    free_bm_job(slave_job);
+                    continue;
                 }
 
                 if (!can_send_raw_job(slave, asic_job_id, slave_job)) {

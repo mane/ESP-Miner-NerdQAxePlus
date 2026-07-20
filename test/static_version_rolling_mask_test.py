@@ -53,7 +53,10 @@ class VersionRollingMaskContractTest(unittest.TestCase):
         slave = CAN_SLAVE.read_text()
 
         self.assertIn("uint32_t version;", slave)
-        self.assertIn("memcpy(&version, s_jobs[result.job_id].version, 4);", slave)
+        self.assertIn("pthread_mutex_lock(&s_job_store_mutex)", slave)
+        self.assertIn("job_snapshot = s_jobs[result.job_id];", slave)
+        self.assertIn("memcpy(&version, job_snapshot.version, 4);", slave)
+        self.assertIn("calc_nonce_diff(&job_snapshot", slave)
         self.assertIn("result.rolled_version | version", slave)
         self.assertNotIn("result.rolled_version ^ version", slave)
 
