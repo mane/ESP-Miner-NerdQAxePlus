@@ -17,6 +17,8 @@
 #include "http_cors.h"
 #include "http_utils.h"
 #include "macros.h"
+#include "ota_operation.h"
+#include "www_image_identity.h"
 
 static const char *TAG = "http_ota";
 
@@ -60,6 +62,13 @@ static esp_err_t send_timeout_response(httpd_req_t *req)
     return ESP_FAIL;
 }
 
+static esp_err_t send_ota_busy_response(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_sendstr(req, "Another OTA update is already in progress");
+}
+
 static esp_err_t send_error_and_restart(httpd_req_t *req, httpd_err_code_t status, const char *message)
 {
     (void) httpd_resp_send_err(req, status, message);
@@ -84,6 +93,30 @@ static bool is_nonempty_c_string(const char *value, size_t capacity)
 size_t ota_firmware_prefix_size()
 {
     return APP_PREFIX_SIZE;
+}
+
+bool copy_nerdqaxeplus_firmware_version(const uint8_t *prefix, size_t prefix_len, char *version,
+                                        size_t version_capacity)
+{
+    if (version && version_capacity > 0) {
+        version[0] = '\0';
+    }
+    if (!prefix || prefix_len < APP_PREFIX_SIZE || !version || version_capacity == 0) {
+        return false;
+    }
+
+    const auto *candidate = reinterpret_cast<const esp_app_desc_t *>(prefix + APP_DESC_OFFSET);
+    if (candidate->magic_word != ESP_APP_DESC_MAGIC_WORD ||
+        !is_nonempty_c_string(candidate->version, sizeof(candidate->version))) {
+        return false;
+    }
+
+    const size_t version_length = strnlen(candidate->version, sizeof(candidate->version));
+    if (version_length + 1 > version_capacity) {
+        return false;
+    }
+    memcpy(version, candidate->version, version_length + 1);
+    return true;
 }
 
 bool validate_nerdqaxeplus_firmware_prefix(const uint8_t *prefix, size_t prefix_len)
@@ -172,6 +205,11 @@ esp_err_t POST_WWW_update(httpd_req_t *req)
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "WWW image must be exactly 3 MiB");
     }
 
+    OtaOperationGuard ota_guard;
+    if (!ota_guard.acquired()) {
+        return send_ota_busy_response(req);
+    }
+
     const esp_partition_t *www_partition =
         esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "www");
     if (!www_partition) {
@@ -207,6 +245,22 @@ esp_err_t POST_WWW_update(httpd_req_t *req)
         received_total += static_cast<size_t>(received);
         taskYIELD();
     }
+
+    const esp_app_desc_t *running = esp_app_get_description();
+    if (!running || !is_nonempty_c_string(running->version, sizeof(running->version))) {
+        ESP_LOGE(TAG, "running firmware has no usable version for WWW identity validation");
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Running firmware identity is unavailable");
+    }
+
+    const WwwImageIdentityStatus identity_status =
+        validate_nerdqaxeplus_www_image(image, received_total, running->version);
+    if (identity_status != WwwImageIdentityStatus::OK) {
+        const char *identity_error = www_image_identity_status_message(identity_status);
+        ESP_LOGE(TAG, "rejected WWW upload before flash mutation: %s", identity_error);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, identity_error);
+    }
+    ESP_LOGI(TAG, "validated WWW image identity for firmware version %s", running->version);
 
     if (!enter_recovery) {
         esp_err_t unmount_err = esp_vfs_spiffs_unregister(nullptr);
@@ -261,6 +315,11 @@ esp_err_t POST_OTA_update(httpd_req_t *req)
     }
     if (req->content_len <= APP_PREFIX_SIZE) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Firmware image is empty or too small");
+    }
+
+    OtaOperationGuard ota_guard;
+    if (!ota_guard.acquired()) {
+        return send_ota_busy_response(req);
     }
 
     const esp_partition_t *ota_partition = esp_ota_get_next_update_partition(nullptr);

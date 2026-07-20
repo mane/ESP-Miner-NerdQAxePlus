@@ -31,6 +31,7 @@ protected:
     pthread_cond_t m_cond;
     bool m_running = false;
     bool m_pending = false;
+    bool m_ota_operation_reserved = false;
     bool m_keep_config = true;
 
     char *m_update_url = nullptr;

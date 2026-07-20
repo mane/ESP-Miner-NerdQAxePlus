@@ -20,15 +20,23 @@ class BuildVersionStampTests(unittest.TestCase):
         for relative_path in ("docker/idf.sh", "docker/idf-shell.sh"):
             script = (ROOT / relative_path).read_text()
             with self.subTest(script=relative_path):
-                self.assertIn('git -C "$repo_dir" describe', script)
+                self.assertIn('commit_hash="${COMMIT_HASH:-$(git -C "$repo_dir" rev-parse --short HEAD', script)
+                self.assertIn('version_tag="${VERSION_TAG:-dev-${commit_hash}}"', script)
+                self.assertIn('diff-index --quiet HEAD --', script)
+                self.assertIn('version_tag="${version_tag}-dirty"', script)
+                self.assertNotIn('describe --tags --abbrev=0', script)
                 self.assertIn('-e VERSION_TAG="$version_tag"', script)
                 self.assertIn('-e COMMIT_HASH="$commit_hash"', script)
 
     def test_versioned_web_build_has_safe_non_git_fallbacks(self):
         script = (ROOT / "main/http_server/axe-os/scripts/build-versioned.sh").read_text()
 
-        self.assertIn('VERSION_TAG="${VERSION_TAG:-local}"', script)
         self.assertIn('COMMIT_HASH="${COMMIT_HASH:-local}"', script)
+        self.assertIn('if [[ -z "${VERSION_TAG:-}" ]]', script)
+        self.assertIn('VERSION_TAG="dev-${COMMIT_HASH}"', script)
+        self.assertIn('VERSION_TAG="${VERSION_TAG}-dirty"', script)
+        self.assertIn('diff-index --quiet HEAD --', script)
+        self.assertNotIn('describe --tags --abbrev=0', script)
 
     def test_release_workflow_forwards_version_to_the_container(self):
         workflow = (ROOT / ".github/workflows/build.yml").read_text()

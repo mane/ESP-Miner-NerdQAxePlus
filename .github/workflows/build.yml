@@ -74,6 +74,14 @@ jobs:
         docker run --rm --user root -e BOARD=${{ matrix.board }} -e VERSION_TAG -e COMMIT_HASH -v "$PWD:/home/builder/project" \
         shufps/esp-idf-builder:0.0.1 idf.py build
 
+    - name: Verify Web release artifacts
+      run: |
+        python3 scripts/verify_web_release.py \
+          --version "$VERSION_TAG" \
+          --commit "$COMMIT_HASH" \
+          --dist main/http_server/axe-os/dist/axe-os \
+          --www build/www.bin
+
     - name: Merge Binaries
       run: |
         docker run --rm --user root -v "$PWD:/home/builder/project" \

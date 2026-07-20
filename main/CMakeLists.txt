@@ -29,6 +29,8 @@ SRCS
     "./http_server/handler_can_swarm.cpp"
     "./http_server/handler_system.cpp"
     "./http_server/handler_ota.cpp"
+    "./http_server/ota_operation.cpp"
+    "./http_server/www_image_identity.cpp"
     "./http_server/handler_otp.cpp"
     "./http_server/handler_restart.cpp"
     "./http_server/handler_shutdown.cpp"

@@ -43,6 +43,18 @@ a {
   text-align: left;
   font-weight: bold;
   border-radius: 5px;
+
+  p {
+    margin: 0.75rem 0 0;
+  }
+
+  .version-mismatch-details {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-top: 0.75rem;
+    font-family: monospace;
+  }
 }
 
 
@@ -68,6 +80,43 @@ a {
 .action-buttons button {
   margin-right: 0.5rem;
   margin-bottom: 0.5rem;
+}
+
+.manual-update-guide {
+  margin-bottom: 1.25rem;
+  padding: 0.75rem;
+  border-left: 3px solid var(--color-info-500, #0095ff);
+  background-color: rgba(0, 149, 255, 0.08);
+  border-radius: 4px;
+
+  p {
+    margin: 0.5rem 0;
+  }
+
+  ol {
+    margin: 0.5rem 0 0;
+    padding-left: 1.25rem;
+  }
+
+  li + li {
+    margin-top: 0.35rem;
+  }
+}
+
+.selected-file,
+.www-file-hint {
+  display: block;
+  margin-top: 0.4rem;
+  overflow-wrap: anywhere;
+}
+
+.www-required-label {
+  padding: 0.5rem;
+  color: var(--text-warning-color, #ffaa00);
+  background-color: rgba(255, 170, 0, 0.1);
+  border-left: 3px solid var(--color-warning-500, #ffaa00);
+  border-radius: 4px;
+  font-weight: 600;
 }
 
 .upload-overlay {
@@ -353,4 +402,3 @@ a {
   margin-right: 10px;
 
 }
-

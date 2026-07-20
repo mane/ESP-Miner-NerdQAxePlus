@@ -4,10 +4,14 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_dir="$(cd -- "$script_dir/.." && pwd -P)"
 
-version_tag="${VERSION_TAG:-$(git -C "$repo_dir" describe --tags --abbrev=0 --dirty --always 2>/dev/null || true)}"
 commit_hash="${COMMIT_HASH:-$(git -C "$repo_dir" rev-parse --short HEAD 2>/dev/null || true)}"
-version_tag="${version_tag:-local}"
 commit_hash="${commit_hash:-local}"
+version_tag="${VERSION_TAG:-dev-${commit_hash}}"
+if [[ -z "${VERSION_TAG:-}" ]] &&
+   git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
+   ! git -C "$repo_dir" diff-index --quiet HEAD -- 2>/dev/null; then
+    version_tag="${version_tag}-dirty"
+fi
 
 exec docker run --rm -it \
     -v /dev:/dev \

@@ -22,6 +22,15 @@ class OtaReleaseSafetyContractTest(unittest.TestCase):
         self.assertIn("candidate->secure_version < running->secure_version", source)
         self.assertIn("esp_ota_begin(ota_partition, image_size", source)
 
+        version_copy = source[
+            source.index("bool copy_nerdqaxeplus_firmware_version") :
+            source.index("bool validate_nerdqaxeplus_firmware_prefix")
+        ]
+        self.assertIn("reinterpret_cast<const esp_app_desc_t *>", version_copy)
+        self.assertIn("candidate->version", version_copy)
+        self.assertIn("memcpy(version, candidate->version", version_copy)
+        self.assertNotIn("esp_app_get_description", version_copy)
+
         validation = source.index("if (!validate_nerdqaxeplus_firmware_prefix(buf, prefix_received))")
         shutdown = source.index("POWER_MANAGEMENT_MODULE.shutdown()", validation)
         self.assertLess(validation, shutdown)
@@ -34,6 +43,9 @@ class OtaReleaseSafetyContractTest(unittest.TestCase):
         self.assertIn("req->content_len != WWW_IMAGE_SIZE", handler)
         self.assertLess(handler.index("MALLOC(WWW_IMAGE_SIZE)"), handler.index("esp_vfs_spiffs_unregister"))
         self.assertLess(handler.index("received_total < WWW_IMAGE_SIZE"), handler.index("esp_vfs_spiffs_unregister"))
+        self.assertIn("validate_nerdqaxeplus_www_image", handler)
+        self.assertLess(handler.index("validate_nerdqaxeplus_www_image"), handler.index("esp_vfs_spiffs_unregister"))
+        self.assertLess(handler.index("validate_nerdqaxeplus_www_image"), handler.index("esp_partition_erase_range"))
         self.assertLess(handler.index("esp_vfs_spiffs_unregister"), handler.index("esp_partition_erase_range"))
         self.assertLess(handler.index("esp_partition_write"), handler.index("init_fs()"))
         self.assertIn("POWER_MANAGEMENT_MODULE.restart()", handler)
@@ -49,9 +61,21 @@ class OtaReleaseSafetyContractTest(unittest.TestCase):
         self.assertIn("clen != FACTORY_IMAGE_SIZE", source)
 
         update = source[source.index("esp_err_t FactoryOTAUpdate::ota_update_from_factory") : source.index("FactoryOTAUpdate::FactoryOTAUpdate")]
+        candidate_copy = update.index("copy_nerdqaxeplus_firmware_version")
+        firmware_validation = update.index("validate_nerdqaxeplus_firmware_prefix")
+        shutdown = update.index("POWER_MANAGEMENT_MODULE.shutdown()")
+        www_validation = update.index(
+            "validate_nerdqaxeplus_www_image(wwwData, WWW_LEN_BYTES, candidate_firmware_version)"
+        )
+        www_update = update.index("do_www_update(wwwData)")
+        self.assertLess(firmware_validation, candidate_copy)
+        self.assertLess(candidate_copy, shutdown)
+        self.assertLess(update.index("http_read_chunk(client, &wwwData"), www_validation)
+        self.assertLess(www_validation, www_update)
+        self.assertNotIn("esp_app_get_description", update)
         self.assertLess(update.index("do_firmware_update(client, firmware_prefix, firmware_prefix_len)"),
-                        update.index("do_www_update(wwwData)"))
-        self.assertLess(update.index("do_www_update(wwwData)"), update.index("esp_ota_set_boot_partition"))
+                        www_update)
+        self.assertLess(www_update, update.index("esp_ota_set_boot_partition"))
 
         flash = source[source.index("esp_err_t FactoryOTAUpdate::do_firmware_update") : source.index("esp_err_t FactoryOTAUpdate::erase_nvs_partition")]
         self.assertIn("esp_ota_end", flash)

@@ -13,6 +13,12 @@ import { IUpdateStatus } from 'src/app/models/IUpdateStatus';
 import { OtpAuthService, EnsureOtpResult, EnsureOtpOptions } from '../../services/otp-auth.service';
 import { ISettingsV2 } from '../../models/ISettingsV2';
 import { getAppVersion } from 'src/app/app.module';
+import {
+  clearPendingManualWwwUpdate,
+  hasPendingManualWwwUpdate,
+  markManualWwwUpdatePending,
+  validateWebsiteImage,
+} from './manual-update.utils';
 
 @Component({
   selector: 'app-settings',
@@ -61,6 +67,7 @@ export class SettingsComponent implements OnInit, OnDestroy {
   public changelog: string = '';
   public currentVersion: string = '';
   public currentWebVersion: string = '';
+  public manualWwwUpdatePending: boolean = false;
 
   public otpEnabled: boolean = false;
 
@@ -96,6 +103,7 @@ export class SettingsComponent implements OnInit, OnDestroy {
         this.deviceModel = info.deviceModel;
         this.asicModel = info.asicModel;
         this.otpEnabled = !!info.otp;
+        this.syncManualWwwUpdateState();
 
         this.expectedFileName = this.githubUpdateService.getFirmwareFilename(
           this.deviceModel,
@@ -197,6 +205,10 @@ export class SettingsComponent implements OnInit, OnDestroy {
   }
 
   public uploadFirmwareFile() {
+    if (this.isOneClickUpdate || this.isFirmwareUploading || this.isWebsiteUploading) {
+      return;
+    }
+
     if (!this.selectedFirmwareFile) {
       this.toastrService.warning(this.translate.instant('TOAST.NO_FILE_SELECTED'), this.translate.instant('TOAST.WARNING'));
       return;
@@ -208,6 +220,9 @@ export class SettingsComponent implements OnInit, OnDestroy {
     }
 
     const file = this.selectedFirmwareFile;
+    // Lock all update entry points before opening the OTP dialog. Otherwise a
+    // second click can start another upload while authorisation is pending.
+    this.isFirmwareUploading = true;
 
     this.otpAuth.ensureOtp$(
       "",
@@ -216,7 +231,12 @@ export class SettingsComponent implements OnInit, OnDestroy {
     )
       .pipe(
         switchMap(({ totp }: EnsureOtpResult) => {
-          this.isFirmwareUploading = true;
+          // Persist the second half of the manual update before starting the
+          // request. A successful OTA reboot can close HTTP before the browser
+          // receives the final response, so response-only persistence is not
+          // reliable enough here.
+          markManualWwwUpdatePending(localStorage, file.name);
+          this.manualWwwUpdatePending = true;
           return this.systemService.performOTAUpdate(file, totp)
             .pipe(this.loadingService.lockUIUntilComplete());
         })
@@ -227,7 +247,13 @@ export class SettingsComponent implements OnInit, OnDestroy {
             this.firmwareUpdateProgress = Math.round(100 * event.loaded / event.total);
           } else if (event?.type === HttpEventType.Response) {
             this.firmwareUpdateProgress = 100;
-            this.toastrService.success(this.translate.instant('TOAST.FIRMWARE_UPDATED'), this.translate.instant('TOAST.SUCCESS'));
+            this.selectedFirmwareFile = null;
+            this.toastrService.success(
+              this.translate.instant('TOAST.FIRMWARE_UPDATED_WWW_REQUIRED'),
+              this.translate.instant('TOAST.SUCCESS'),
+              { duration: 10000 },
+            );
+            this.startRebootCheck();
           }
         },
         error: (err) => {
@@ -240,8 +266,6 @@ export class SettingsComponent implements OnInit, OnDestroy {
           setTimeout(() => this.firmwareUpdateProgress = 0, 500);
         }
       });
-
-    this.selectedFirmwareFile = null;
   }
 
 
@@ -252,26 +276,57 @@ export class SettingsComponent implements OnInit, OnDestroy {
     }
   }
 
-  public uploadWebsiteFile() {
+  public async uploadWebsiteFile() {
+    if (this.isOneClickUpdate || this.isFirmwareUploading || this.isWebsiteUploading) {
+      return;
+    }
+
     if (!this.selectedWebsiteFile) {
       this.toastrService.warning(this.translate.instant('TOAST.NO_FILE_SELECTED'), this.translate.instant('TOAST.WARNING'));
       return;
     }
 
-    if (this.selectedWebsiteFile.name !== 'www.bin') {
-      this.toastrService.danger(`${this.translate.instant('TOAST.INCORRECT_FILE')}: www.bin`, this.translate.instant('TOAST.ERROR'));
+    const file = this.selectedWebsiteFile;
+    // Reading and checking the embedded image identity is asynchronous. Hold
+    // the UI lock across validation and OTP authorisation as well as upload.
+    this.isWebsiteUploading = true;
+    const validation = await validateWebsiteImage(file, this.currentVersion);
+    if (!validation.valid) {
+      if (validation.error === 'size') {
+        this.toastrService.danger(
+          this.translate.instant('TOAST.WWW_IMAGE_SIZE'),
+          this.translate.instant('TOAST.ERROR'),
+        );
+      } else if (validation.error === 'version') {
+        this.toastrService.danger(
+          this.translate.instant('TOAST.WWW_VERSION_MISMATCH', {
+            fileVersion: validation.embeddedVersion,
+            firmwareVersion: this.currentVersion,
+          }),
+          this.translate.instant('TOAST.ERROR'),
+        );
+      } else if (validation.error === 'identity') {
+        this.toastrService.danger(
+          this.translate.instant('TOAST.WWW_IDENTITY_INVALID'),
+          this.translate.instant('TOAST.ERROR'),
+        );
+      } else {
+        this.toastrService.danger(
+          `${this.translate.instant('TOAST.INCORRECT_FILE')}: ${this.expectedWebsiteFileName}`,
+          this.translate.instant('TOAST.ERROR'),
+        );
+      }
+      this.isWebsiteUploading = false;
       return;
     }
-    const file = this.selectedWebsiteFile;
 
     this.otpAuth.ensureOtp$(
       "",
       this.translate.instant('SECURITY.OTP_TITLE'),
-      this.translate.instant('SECURITY.OTP_FW_HINT')
+      this.translate.instant('SECURITY.OTP_WWW_HINT')
     )
       .pipe(
         switchMap(({ totp }: EnsureOtpResult) => {
-          this.isWebsiteUploading = true;
           return this.systemService.performWWWOTAUpdate(file, totp)
             .pipe(this.loadingService.lockUIUntilComplete());
         })
@@ -283,6 +338,9 @@ export class SettingsComponent implements OnInit, OnDestroy {
             this.websiteUpdateProgress = Math.round(100 * event.loaded / event.total);
           } else if (event.type === HttpEventType.Response) {
             this.websiteUpdateProgress = 100;
+            clearPendingManualWwwUpdate(localStorage);
+            this.manualWwwUpdatePending = false;
+            this.selectedWebsiteFile = null;
             this.toastrService.success(this.translate.instant('TOAST.WEBSITE_UPDATED'), this.translate.instant('TOAST.SUCCESS'));
             setTimeout(() => window.location.reload(), 1000);
           }
@@ -297,9 +355,6 @@ export class SettingsComponent implements OnInit, OnDestroy {
           setTimeout(() => this.websiteUpdateProgress = 0, 500);
         }
       });
-
-
-    this.selectedWebsiteFile = null;
   }
 
 
@@ -380,6 +435,10 @@ export class SettingsComponent implements OnInit, OnDestroy {
    * Direct update from GitHub via backend proxy
    */
   public directUpdateFromGithub() {
+    if (this.isOneClickUpdate || this.isFirmwareUploading || this.isWebsiteUploading) {
+      return;
+    }
+
     if (!this.selectedRelease) {
       this.toastrService.warning(this.translate.instant('TOAST.NO_RELEASE_INFO'), this.translate.instant('TOAST.WARNING'));
       return;
@@ -396,6 +455,13 @@ export class SettingsComponent implements OnInit, OnDestroy {
     }
 
     const assetUrl = asset.browser_download_url;
+    let updateAccepted = false;
+
+    // Reserve the UI update state before OTP authorisation so another update
+    // route cannot be entered while the dialog is open.
+    this.isOneClickUpdate = true;
+    this.otaProgress = 0;
+    this.firmwareUpdateProgress = 0;
 
     this.otpAuth.ensureOtp$(
       "",
@@ -404,11 +470,6 @@ export class SettingsComponent implements OnInit, OnDestroy {
     )
       .pipe(
         switchMap(({ totp }: EnsureOtpResult) => {
-          // reset UI states
-          this.otaProgress = 0;
-          this.isOneClickUpdate = true;
-          this.firmwareUpdateProgress = 0;
-
           // kick the backend update
           const keepConfig = this.keepConfigCtrl.value ?? true;
           return this.systemService.performGithubOTAUpdate(assetUrl, keepConfig, totp);
@@ -416,11 +477,18 @@ export class SettingsComponent implements OnInit, OnDestroy {
       )
       .subscribe({
         next: () => {
+          updateAccepted = true;
           this.startUpdatePolling();
         },
         error: (err) => {
           this.toastrService.danger(`${this.translate.instant('TOAST.UPDATE_FAILED')}: ${err.message || err.error}`, this.translate.instant('TOAST.ERROR'));
           this.isOneClickUpdate = false;
+        },
+        complete: () => {
+          // OTP cancellation completes without starting an HTTP request.
+          if (!updateAccepted) {
+            this.isOneClickUpdate = false;
+          }
         }
       });
   }
@@ -467,6 +535,10 @@ export class SettingsComponent implements OnInit, OnDestroy {
           // check if device finished updating and only fire the success toast a single time
           if (status.step === 'rebooting' && !this.sawRebooting) {
             this.sawRebooting = true;
+            // The one-click factory image contains firmware and WWW together,
+            // so it also completes any stale manual-update reminder.
+            clearPendingManualWwwUpdate(localStorage);
+            this.manualWwwUpdatePending = false;
             this.toastrService.success(this.translate.instant('TOAST.FIRMWARE_UPDATED'), this.translate.instant('TOAST.SUCCESS'));
             this.startRebootCheck();
           }
@@ -559,6 +631,28 @@ export class SettingsComponent implements OnInit, OnDestroy {
 
   public getAppVersion() {
     return getAppVersion();
+  }
+
+  public get hasVersionMismatch(): boolean {
+    return this.currentWebVersion !== '' && this.currentVersion !== this.currentWebVersion;
+  }
+
+  public get websiteUpdateRequired(): boolean {
+    return this.manualWwwUpdatePending || this.hasVersionMismatch;
+  }
+
+  public get expectedWebsiteFileName(): string {
+    return this.currentVersion
+      ? `www.bin / www-NerdQAxePlus-LTS-${this.currentVersion}.bin / www-${this.currentVersion}.bin`
+      : 'www.bin';
+  }
+
+  private syncManualWwwUpdateState(): void {
+    if (this.currentWebVersion && !this.hasVersionMismatch) {
+      clearPendingManualWwwUpdate(localStorage);
+    }
+
+    this.manualWwwUpdatePending = this.hasVersionMismatch || hasPendingManualWwwUpdate(localStorage);
   }
 
 }

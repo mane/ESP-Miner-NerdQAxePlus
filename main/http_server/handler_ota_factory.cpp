@@ -20,7 +20,9 @@
 #include "http_cors.h"
 #include "http_utils.h"
 #include "macros.h"
+#include "ota_operation.h"
 #include "psram_allocator.h"
+#include "www_image_identity.h"
 
 #define GITHUB_RELEASE_DOWNLOAD_PREFIX "https://github.com/mane/ESP-Miner-NerdQAxePlus/releases/download/"
 #define GITHUB_RELEASE_ASSET_PREFIX "https://release-assets.githubusercontent.com/"
@@ -454,6 +456,18 @@ esp_err_t FactoryOTAUpdate::ota_update_from_factory(const char *start_url, bool 
         return err == ESP_OK ? ESP_ERR_INVALID_VERSION : err;
     }
 
+    // Preserve the candidate version before any flash or filesystem mutation.
+    // A one-click update normally targets a newer release than the running app,
+    // so validating WWW against the running application descriptor would reject the
+    // correct pair and could still allow a pair matching only the old app.
+    char candidate_firmware_version[128] = {};
+    if (!copy_nerdqaxeplus_firmware_version(firmware_prefix, firmware_prefix_len, candidate_firmware_version,
+                                            sizeof(candidate_firmware_version))) {
+        ESP_LOGE(TAG, "factory firmware candidate version is unavailable");
+        setStep(OtaStep::ERROR, "OTA: incompatible firmware");
+        return ESP_ERR_INVALID_VERSION;
+    }
+
     {
         // lock the power management module
         LockGuard g(POWER_MANAGEMENT_MODULE);
@@ -495,6 +509,18 @@ esp_err_t FactoryOTAUpdate::ota_update_from_factory(const char *start_url, bool 
             }
             addWwwRecvBytes(CHUNK_SIZE);
         }
+
+        const WwwImageIdentityStatus identity_status =
+            validate_nerdqaxeplus_www_image(wwwData, WWW_LEN_BYTES, candidate_firmware_version);
+        if (identity_status != WwwImageIdentityStatus::OK) {
+            const char *identity_error = www_image_identity_status_message(identity_status);
+            ESP_LOGE(TAG, "factory WWW identity rejected before filesystem mutation: %s", identity_error);
+            setStep(OtaStep::ERROR, "OTA: incompatible WWW image");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            POWER_MANAGEMENT_MODULE.restart();
+            return ESP_ERR_INVALID_VERSION; // unreachable; old app remains selected
+        }
+        ESP_LOGI(TAG, "validated factory WWW image for candidate firmware version %s", candidate_firmware_version);
 
         ESP_LOGI(TAG, "performing www update ...");
 
@@ -592,12 +618,24 @@ void FactoryOTAUpdate::task()
         // Consume the request and mark running
         char *url = m_update_url; // take ownership
         bool keep_config = m_keep_config;
+        bool ota_operation_reserved = m_ota_operation_reserved;
         m_update_url = NULL;
+        m_ota_operation_reserved = false;
         m_pending = false;
         m_running = true;
         pthread_mutex_unlock(&m_mutex);
 
         ESP_LOGI(TAG, "OTA update triggered.");
+
+        if (!ota_operation_reserved) {
+            ESP_LOGE(TAG, "OTA request has no device-wide operation reservation");
+            free(url);
+            pthread_mutex_lock(&m_mutex);
+            m_running = false;
+            pthread_mutex_unlock(&m_mutex);
+            continue;
+        }
+        OtaOperationGuard ota_guard(OtaOperationLockMode::ADOPT_ACQUIRED);
 
         if (!url) {
             ESP_LOGE(TAG, "update url is null!");
@@ -766,21 +804,30 @@ bool FactoryOTAUpdate::trigger(const char *url, bool keep_config)
 {
     if (!url || !*url)
         return false;
+
+    // Reserve before queueing work so manual uploads fail immediately while
+    // this request is pending, not only after the worker begins flashing.
+    if (!ota_operation_try_acquire())
+        return false;
+
     pthread_mutex_lock(&m_mutex);
     if (m_running || m_pending) {
         pthread_mutex_unlock(&m_mutex);
+        ota_operation_release();
         return false;
     }
 
     char *copy = strdup(url);
     if (!copy) {
         pthread_mutex_unlock(&m_mutex);
+        ota_operation_release();
         return false;
     }
 
     free(m_update_url);
     m_update_url = copy;
     m_keep_config = keep_config;
+    m_ota_operation_reserved = true;
     m_pending = true;
 
     pthread_cond_signal(&m_cond);

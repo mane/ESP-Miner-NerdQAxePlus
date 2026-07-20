@@ -9,10 +9,15 @@ else
   REPO_ROOT="$(cd "$WEB_DIR/../../.." && pwd)"
 fi
 
-VERSION_TAG="${VERSION_TAG:-$(git -C "$REPO_ROOT" describe --tags --abbrev=0 --dirty --always 2>/dev/null || true)}"
 COMMIT_HASH="${COMMIT_HASH:-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || true)}"
-VERSION_TAG="${VERSION_TAG:-local}"
 COMMIT_HASH="${COMMIT_HASH:-local}"
+if [[ -z "${VERSION_TAG:-}" ]]; then
+  VERSION_TAG="dev-${COMMIT_HASH}"
+  if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
+     ! git -C "$REPO_ROOT" diff-index --quiet HEAD -- 2>/dev/null; then
+    VERSION_TAG="${VERSION_TAG}-dirty"
+  fi
+fi
 APP_MODULE="$WEB_DIR/src/app/app.module.ts"
 BACKUP="$(mktemp)"
 
@@ -50,5 +55,11 @@ done
 
 ./node_modules/.bin/gzipper compress --verbose --gzip --gzip-level 9 ./dist/axe-os
 node only-gzip.js
+
+python3 "$REPO_ROOT/scripts/verify_web_release.py" \
+  --version "$VERSION_TAG" \
+  --commit "$COMMIT_HASH" \
+  --dist "$WEB_DIR/dist/axe-os" \
+  --write-identity
 
 echo "Web UI stamped with VERSION_TAG=${VERSION_TAG} COMMIT_HASH=${COMMIT_HASH}"

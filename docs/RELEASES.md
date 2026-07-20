@@ -41,7 +41,7 @@ cd /Users/mane/Development/ESP-Miner-NerdQAxePlus
 git switch lts/nerdqaxeplus-only
 git pull --ff-only origin lts/nerdqaxeplus-only
 
-TAG=v1.1.1-mane.6-nqa-lts4
+TAG=v1.1.1-mane.6-nqa-lts8
 git tag -a "$TAG" -m "$TAG"
 git push origin "$TAG"
 
@@ -73,6 +73,36 @@ and OTA firmware binaries named:
 ```text
 esp-miner-NerdQAxePlus-LTS.bin
 www.bin
+```
+
+## Web artifact preflight
+
+The versioned Web build checks its generated `dist` directory automatically.
+After ESP-IDF creates `build/www.bin`, the release workflow runs the same
+preflight against the final SPIFFS image before any artifact is merged or
+uploaded. The check fails if the Angular bundle does not contain the expected
+`VERSION_TAG` and `COMMIT_HASH`, still contains a build placeholder or an older
+LTS tag, has stale translation filenames, or if any file in `www.bin` differs
+from `dist`. The build also adds an uncompressed
+`nerdqaxe-web-identity.txt` manifest after asset compression. Manual WWW
+uploads read that embedded version/commit identity from the 3 MiB image and
+fail closed if it is missing, malformed, duplicated, or belongs to a different
+firmware release—even when the downloaded asset retains the generic
+`www.bin` filename. The firmware repeats this validation on the complete
+upload before unmounting or erasing SPIFFS, including uploads from the embedded
+recovery page or a direct API client. The UI accepts `www.bin`, the canonical
+`www-NerdQAxePlus-LTS-<TAG>.bin` archive name, and the compatible short
+`www-<TAG>.bin` alias; every versioned name must agree with the embedded
+identity and running firmware.
+
+The final check can also be run locally and only needs Python 3:
+
+```bash
+python3 scripts/verify_web_release.py \
+  --version "$VERSION_TAG" \
+  --commit "$COMMIT_HASH" \
+  --dist main/http_server/axe-os/dist/axe-os \
+  --www build/www.bin
 ```
 
 ## Installing and future updates

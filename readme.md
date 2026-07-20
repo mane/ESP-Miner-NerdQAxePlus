@@ -70,7 +70,7 @@ To switch the board into bootload mode, reset the device with the `boot` button
 pressed.
 
 ```bash
-TAG=v1.1.1-mane.6-nqa-lts4  # replace with the latest LTS tag
+TAG=v1.1.1-mane.6-nqa-lts8  # replace with the latest LTS tag
 BOARD_LABEL=NerdQAxePlus-LTS
 curl -L -o "esp-miner-factory-${BOARD_LABEL}-${TAG}.bin" \
   "https://github.com/mane/ESP-Miner-NerdQAxePlus/releases/download/${TAG}/esp-miner-factory-${BOARD_LABEL}-${TAG}.bin"
@@ -98,20 +98,24 @@ export BOARD=NERDQAXEPLUS
 
 The build outputs `build/esp-miner.bin` and `build/www.bin`.
 
-The Docker wrappers derive the Git tag and commit on the host and pass them to
-the container, so firmware and Web UI report the same version even when the
-checkout is a Git worktree. For a release build you can override them explicitly:
+The Docker wrappers derive a fail-safe `dev-<commit>` identity and the commit on
+the host and pass them to the container, so firmware and Web UI report the same
+version even when the checkout is a Git worktree. Tracked local changes add a
+`-dirty` suffix. For a release build, always override both values explicitly:
 
 ```bash
-VERSION_TAG=v1.1.1-mane.6-nqa-lts4 COMMIT_HASH="$(git rev-parse --short HEAD)" \
+VERSION_TAG=v1.1.1-mane.6-nqa-lts8 COMMIT_HASH="$(git rev-parse --short HEAD)" \
   ./docker/idf.sh build
 ```
 
 ### Manual Docker build with the published builder image
 
 ```bash
-VERSION_TAG="$(git describe --tags --abbrev=0 --dirty --always)"
 COMMIT_HASH="$(git rev-parse --short HEAD)"
+VERSION_TAG="dev-${COMMIT_HASH}"
+if ! git diff-index --quiet HEAD --; then
+  VERSION_TAG="${VERSION_TAG}-dirty"
+fi
 
 docker run --rm --user root -e BOARD=NERDQAXEPLUS \
   -e VERSION_TAG -e COMMIT_HASH \
@@ -155,10 +159,20 @@ tachometers without changing device settings:
 ```bash
 python3 scripts/device_health_check.py http://192.168.68.104/ \
   --expect-model 'NerdQAxe+' \
-  --expect-version 'v1.1.1-mane.6-nqa-lts4'
+  --expect-version 'v1.1.1-mane.6-nqa-lts8'
 ```
 
 Omit `--expect-version` when checking an unknown or development build. Use
-`--json` for monitoring or automation. A fan commanded above 30% while
-reporting 0 RPM is shown as a warning; shutdown, board faults, zero hashrate,
-over-temperature and loss of every Stratum pool are reported as errors.
+`--json` for monitoring or automation. The check also downloads the served
+`index.html` and its fingerprinted `main.*.js` bundle with cache-busting and
+gzip support. It reports the Web-UI version and commit and treats a Web-UI /
+firmware version mismatch as an error; this catches partial OTA updates where
+only one of `esp-miner-*.bin` and `www.bin` was installed. An old or custom UI
+whose build markers cannot be read produces a warning while the API health
+checks continue normally. A missing, unreadable or corrupt index or main bundle
+is an error. Use `--api-only` to skip Web-UI verification explicitly when only
+the JSON API is expected to be available.
+
+A fan commanded above 30% while reporting 0 RPM is shown as a warning;
+shutdown, board faults, zero hashrate, over-temperature and loss of every
+Stratum pool are reported as errors.
