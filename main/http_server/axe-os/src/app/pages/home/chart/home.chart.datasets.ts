@@ -13,6 +13,26 @@ export interface HomeChartSeriesRefs {
   asicTemp: number[];
 }
 
+export const HOME_CHART_TRANSLATION_KEYS = [
+  'HOME.HASHRATE_1M',
+  'HOME.HASHRATE_10M',
+  'HOME.HASHRATE_1H',
+  'HOME.HASHRATE_1D',
+  'PERFORMANCE.VR_TEMP_LEGEND',
+  'PERFORMANCE.ASIC_TEMP_LEGEND',
+] as const;
+
+/** Refresh labels after ngx-translate has loaded or changed languages. */
+export function applyHomeDatasetTranslations(
+  datasets: any[] | undefined,
+  translate: (key: string) => string,
+): void {
+  if (!Array.isArray(datasets)) return;
+  HOME_CHART_TRANSLATION_KEYS.forEach((key, index) => {
+    if (datasets[index]) datasets[index].label = translate(key);
+  });
+}
+
 export function createHomeDatasets(opts: { t: (key: string) => string; series: HomeChartSeriesRefs }): any[] {
   const { t, series } = opts;
   const HR_BASE_COLOR = HOME_CFG.colors.hashrateBase;

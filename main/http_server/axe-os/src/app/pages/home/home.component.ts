@@ -32,6 +32,8 @@ import {
   HomeHistoryDrainer,
   createHomeChartConfig,
   createHomeChart,
+  applyHomeDatasetTranslations,
+  HOME_CHART_TRANSLATION_KEYS,
   applyHomeChartTheme,
   createSystemInfoPolling$,
   installNerdChartsDebugBootstrap,
@@ -473,6 +475,7 @@ export class HomeComponent implements AfterViewChecked, OnInit, OnDestroy {
 
   private chart?: Chart;
   private themeSubscription?: Subscription;
+  private chartLanguageSubscription?: Subscription;
   private chartInitialized = false;
   private _info: IDashboardV2 | undefined;
   private timeFormatListener: any;
@@ -968,6 +971,10 @@ ngOnInit() {
     this.chartWindowMs = clampWindowMs(HOME_CFG.xAxis.fixedWindowMs, this.zoomCfg);
     // Chart.js plugins are global; register once.
     registerHomeChartPlugins();
+    this.refreshChartTranslations();
+    this.chartLanguageSubscription = this.translateService.onLangChange.subscribe(() => {
+      this.refreshChartTranslations();
+    });
     installNerdChartsDebugBootstrap(globalThis, {
       storage: {
         getItem: (k: string) => this.localStorageGet(k),
@@ -1067,12 +1074,25 @@ ngOnInit() {
 
     // Clean up theme subscription to avoid memory leaks when navigating away.
     this.themeSubscription?.unsubscribe();
+    this.chartLanguageSubscription?.unsubscribe();
     this.historyDrainer?.stop();
     // Cancel any pending auto-reload timer.
     this.clearHr1mReloadTimer();
     if (this.timeFormatListener) {
       window.removeEventListener('timeFormatChanged', this.timeFormatListener);
     }
+  }
+
+  private refreshChartTranslations(): void {
+    this.translateService.get([...HOME_CHART_TRANSLATION_KEYS]).subscribe((translations) => {
+      applyHomeDatasetTranslations(
+        this.chartData?.datasets,
+        (key) => translations[key] ?? key,
+      );
+      if (this.chart) {
+        this.ngZone.runOutsideAngular(() => this.chart?.update?.('none'));
+      }
+    });
   }
 
   public updateTimeFormat(): void {
