@@ -70,7 +70,7 @@ To switch the board into bootload mode, reset the device with the `boot` button
 pressed.
 
 ```bash
-TAG=v1.1.1-mane.6-nqa-lts8  # replace with the latest LTS tag
+TAG=v1.1.1-mane.6-nqa-lts9  # replace with the latest LTS tag
 BOARD_LABEL=NerdQAxePlus-LTS
 curl -L -o "esp-miner-factory-${BOARD_LABEL}-${TAG}.bin" \
   "https://github.com/mane/ESP-Miner-NerdQAxePlus/releases/download/${TAG}/esp-miner-factory-${BOARD_LABEL}-${TAG}.bin"
@@ -104,7 +104,7 @@ version even when the checkout is a Git worktree. Tracked local changes add a
 `-dirty` suffix. For a release build, always override both values explicitly:
 
 ```bash
-VERSION_TAG=v1.1.1-mane.6-nqa-lts8 COMMIT_HASH="$(git rev-parse --short HEAD)" \
+VERSION_TAG=v1.1.1-mane.6-nqa-lts9 COMMIT_HASH="$(git rev-parse --short HEAD)" \
   ./docker/idf.sh build
 ```
 
@@ -159,7 +159,7 @@ tachometers without changing device settings:
 ```bash
 python3 scripts/device_health_check.py http://192.168.68.104/ \
   --expect-model 'NerdQAxe+' \
-  --expect-version 'v1.1.1-mane.6-nqa-lts8'
+  --expect-version 'v1.1.1-mane.6-nqa-lts9'
 ```
 
 Omit `--expect-version` when checking an unknown or development build. Use

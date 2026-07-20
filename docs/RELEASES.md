@@ -41,7 +41,7 @@ cd /Users/mane/Development/ESP-Miner-NerdQAxePlus
 git switch lts/nerdqaxeplus-only
 git pull --ff-only origin lts/nerdqaxeplus-only
 
-TAG=v1.1.1-mane.6-nqa-lts8
+TAG=v1.1.1-mane.6-nqa-lts9
 git tag -a "$TAG" -m "$TAG"
 git push origin "$TAG"
 
