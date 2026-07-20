@@ -185,6 +185,7 @@ bool NerdQaxePlus::initAsics()
 {
     m_isInitialized = false;
     m_isBuckInitialized = false;
+    m_chipsDetected = 0;
 
     // disable buck (disables EN pin)
     setVoltage(0.0);
@@ -247,9 +248,21 @@ bool NerdQaxePlus::initAsics()
         VREG_disable();
         LDO_disable();
         m_isBuckInitialized = false;
+        m_chipsDetected = 0;
+        m_isInitialized = false;
         return false;
     }
     int maxBaud = m_asics->setMaxBaud();
+    if (maxBaud <= 0) {
+        ESP_LOGE(TAG, "error setting ASIC UART baud");
+        setAsicReset(0);
+        VREG_disable();
+        LDO_disable();
+        m_isBuckInitialized = false;
+        m_chipsDetected = 0;
+        m_isInitialized = false;
+        return false;
+    }
     // no idea why a delay is needed here starting with esp-idf 5.4 🙈
     vTaskDelay(pdMS_TO_TICKS(500));
     SERIAL_set_baud(maxBaud);
@@ -264,6 +277,8 @@ bool NerdQaxePlus::initAsics()
         VREG_disable();
         LDO_disable();
         m_isBuckInitialized = false;
+        m_chipsDetected = 0;
+        m_isInitialized = false;
         return false;
     }
 

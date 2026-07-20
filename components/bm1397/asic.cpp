@@ -76,24 +76,24 @@ bool Asic::send(uint8_t header, uint8_t *data, uint8_t data_len)
     return true;
 }
 
-void Asic::send6(uint8_t header, uint8_t b0, uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4, uint8_t b5) {
+bool Asic::send6(uint8_t header, uint8_t b0, uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4, uint8_t b5) {
     uint8_t buf[6] = {b0, b1, b2, b3, b4, b5};
-    send(header, buf, sizeof(buf));
+    return send(header, buf, sizeof(buf));
 }
 
-void Asic::send2(uint8_t header, uint8_t b0, uint8_t b1) {
+bool Asic::send2(uint8_t header, uint8_t b0, uint8_t b1) {
     uint8_t buf[2] = {b0, b1};
-    send(header, buf, sizeof(buf));
+    return send(header, buf, sizeof(buf));
 }
 
-void Asic::sendChainInactive(void)
+bool Asic::sendChainInactive(void)
 {
-    send2(TYPE_CMD | GROUP_ALL | CMD_INACTIVE, 0x00, 0x00);
+    return send2(TYPE_CMD | GROUP_ALL | CMD_INACTIVE, 0x00, 0x00);
 }
 
-void Asic::setChipAddress(uint8_t chipAddr)
+bool Asic::setChipAddress(uint8_t chipAddr)
 {
-    send2(TYPE_CMD | GROUP_SINGLE | CMD_SETADDRESS, chipAddr, 0x00);
+    return send2(TYPE_CMD | GROUP_SINGLE | CMD_SETADDRESS, chipAddr, 0x00);
 }
 
 void Asic::sendReadAddress(void)
@@ -192,7 +192,10 @@ int Asic::setMaxBaud(void)
 {
 //    return 115749;
     ESP_LOGI(TAG, "Setting max baud of 1000000 ");
-    send6(CMD_WRITE_ALL, 0x00, 0x28, 0x11, 0x30, 0x02, 0x00);
+    if (!send6(CMD_WRITE_ALL, 0x00, 0x28, 0x11, 0x30, 0x02, 0x00)) {
+        ESP_LOGE(TAG, "Failed to send max-baud command");
+        return 0;
+    }
     return 1000000;
 }
 
@@ -203,13 +206,13 @@ constexpr uint32_t VR_TICK_HZ_U32     = ASIC_IO_CLK_HZ_U32 / VR_TICK_DIV_U32; //
 constexpr uint64_t VR_REG_PER_HZ_U64  = 65536ull * VR_TICK_HZ_U32;            // 196,608,000
 
 // Version rolling frequency register @0x10 (MSB -> LSB)
-void Asic::setVrFreqReg(uint32_t value) {
+bool Asic::setVrFreqReg(uint32_t value) {
     ESP_LOGI(TAG, "setting 0x10 to %08lx", value);
-    send6(CMD_WRITE_ALL, 0x00, 0x10,
-          static_cast<uint8_t>((value >> 24) & 0xFF),
-          static_cast<uint8_t>((value >> 16) & 0xFF),
-          static_cast<uint8_t>((value >>  8) & 0xFF),
-          static_cast<uint8_t>((value >>  0) & 0xFF));
+    return send6(CMD_WRITE_ALL, 0x00, 0x10,
+                 static_cast<uint8_t>((value >> 24) & 0xFF),
+                 static_cast<uint8_t>((value >> 16) & 0xFF),
+                 static_cast<uint8_t>((value >>  8) & 0xFF),
+                 static_cast<uint8_t>((value >>  0) & 0xFF));
 }
 
 // Convert desired VR frequency (Hz, integer) to register value for 0x10
@@ -234,22 +237,22 @@ uint32_t Asic::vrRegToFreq(uint32_t reg) {
     return static_cast<uint32_t>((VR_REG_PER_HZ_U64 + (reg / 2)) / reg);
 }
 
-void Asic::setVrFrequency(uint32_t freq_hz) {
+bool Asic::setVrFrequency(uint32_t freq_hz) {
     if (freq_hz == 0) {
         ESP_LOGW(TAG, "ignoring invalid version rolling frequency: 0Hz");
-        return;
+        return false;
     }
 
-    setVrFreqReg(vrFreqToReg(freq_hz));
+    return setVrFreqReg(vrFreqToReg(freq_hz));
 }
 
-void Asic::setVersionMask(uint32_t version_mask) {
+bool Asic::setVersionMask(uint32_t version_mask) {
     uint16_t chip_mask = static_cast<uint16_t>((version_mask >> 13) & 0xFFFFu);
     ESP_LOGI(TAG, "setting version rolling mask %08lx (chip mask %04x)",
              (unsigned long) version_mask, (unsigned int) chip_mask);
-    send6(CMD_WRITE_ALL, 0x00, 0xA4, 0x90, 0x00,
-          static_cast<uint8_t>((chip_mask >> 8) & 0xFF),
-          static_cast<uint8_t>(chip_mask & 0xFF));
+    return send6(CMD_WRITE_ALL, 0x00, 0xA4, 0x90, 0x00,
+                 static_cast<uint8_t>((chip_mask >> 8) & 0xFF),
+                 static_cast<uint8_t>(chip_mask & 0xFF));
 }
 
 // default calculation using address_interval
@@ -344,7 +347,10 @@ bool Asic::stepAsicFrequency(float target_frequency, float max_step_mhz)
 int Asic::count_asics() {
 
     // read register 00 on all chips (should respond AA 55 13 68 00 00 00 00 00 00 0F)
-    send2(CMD_READ_ALL, 0x00, 0x00);
+    if (!send2(CMD_READ_ALL, 0x00, 0x00)) {
+        ESP_LOGE(TAG, "Failed to request ASIC addresses");
+        return 0;
+    }
 
     uint8_t buf[11];
     int chip_counter = 0;
@@ -367,7 +373,7 @@ int Asic::count_asics() {
     return chip_counter;
 }
 
-void Asic::setJobDifficultyMask(int difficulty)
+bool Asic::setJobDifficultyMask(int difficulty)
 {
     // Default mask of 256 diff
     unsigned char job_difficulty_mask[9] = {0x00, TICKET_MASK, 0b00000000, 0b00000000, 0b00000000, 0b11111111};
@@ -379,7 +385,7 @@ void Asic::setJobDifficultyMask(int difficulty)
     difficulty = _largest_power_of_two(difficulty) - 1;
 
     if (m_asicDifficulty == difficulty) {
-        return;
+        return true;
     }
 
     // convert difficulty into char array
@@ -396,10 +402,14 @@ void Asic::setJobDifficultyMask(int difficulty)
 
     ESP_LOGI(TAG, "Setting ASIC difficulty mask to %d", difficulty);
 
-    send((CMD_WRITE_ALL), job_difficulty_mask, 6);
+    if (!send((CMD_WRITE_ALL), job_difficulty_mask, 6)) {
+        ESP_LOGE(TAG, "Failed to send ASIC difficulty mask");
+        return false;
+    }
 
     // remember the hw difficulty
     m_asicDifficulty = difficulty;
+    return true;
 }
 
 // can ramp up and down in 6.25MHz steps
@@ -408,8 +418,13 @@ bool Asic::setAsicFrequency(float target_freq) {
 }
 
 
-uint8_t Asic::sendWork(uint32_t job_id, bm_job *next_bm_job)
+bool Asic::sendWork(uint32_t job_id, bm_job *next_bm_job, uint8_t &asic_job_id)
 {
+    if (!next_bm_job) {
+        ESP_LOGE(TAG, "Cannot send a null ASIC job");
+        return false;
+    }
+
     BM1368_job job;
 
     job.job_id = jobToAsicId(job_id);
@@ -422,15 +437,24 @@ uint8_t Asic::sendWork(uint32_t job_id, bm_job *next_bm_job)
     memcpy(job.prev_block_hash, next_bm_job->prev_block_hash_be, 32);
     memcpy(&job.version, &next_bm_job->version, 4);
 
-    send((TYPE_JOB | GROUP_SINGLE | CMD_WRITE), (uint8_t*) &job, sizeof(BM1368_job));
+    if (!send((TYPE_JOB | GROUP_SINGLE | CMD_WRITE), (uint8_t*) &job, sizeof(BM1368_job))) {
+        ESP_LOGE(TAG, "Failed to send ASIC job %02X", job.job_id);
+        return false;
+    }
 
-    // we return it because different asics calculate it differently
-    return job.job_id;
+    // Return it through an out-parameter because different ASICs calculate it
+    // differently and every uint8_t value is a valid job ID.
+    asic_job_id = job.job_id;
+    return true;
 }
 
-void Asic::sendRawJob(BM1368_job *job)
+bool Asic::sendRawJob(BM1368_job *job)
 {
-    send((TYPE_JOB | GROUP_SINGLE | CMD_WRITE), (uint8_t*) job, sizeof(BM1368_job));
+    if (!job) {
+        ESP_LOGE(TAG, "Cannot send a null raw ASIC job");
+        return false;
+    }
+    return send((TYPE_JOB | GROUP_SINGLE | CMD_WRITE), (uint8_t*) job, sizeof(BM1368_job));
 }
 
 bool Asic::receiveWork(asic_result_t *result)

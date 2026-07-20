@@ -101,9 +101,12 @@ void PowerManagementTask::checkVrFrequencyChanged()
 
     uint32_t vrFrequency = m_board->getVrFrequency();
     if (vrFrequency != lastVrFrequency) {
-        m_board->setVrFrequency(vrFrequency);
-        ESP_LOGI(TAG, "setting version rolling frequency to %luHz", vrFrequency);
-        lastVrFrequency = vrFrequency;
+        if (m_board->setVrFrequency(vrFrequency)) {
+            ESP_LOGI(TAG, "setting version rolling frequency to %luHz", vrFrequency);
+            lastVrFrequency = vrFrequency;
+        } else {
+            ESP_LOGE(TAG, "failed to set version rolling frequency to %luHz; will retry", vrFrequency);
+        }
     }
 }
 

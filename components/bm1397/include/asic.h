@@ -104,15 +104,15 @@ protected:
     uint8_t m_addressInterval = 2; ///< Chip address spacing (set during init)
 
     bool send(uint8_t header, uint8_t *data, uint8_t data_len);
-    void send2(uint8_t header, uint8_t b0, uint8_t b1);
-    void send6(uint8_t header, uint8_t b0, uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4, uint8_t b5);
+    bool send2(uint8_t header, uint8_t b0, uint8_t b1);
+    bool send6(uint8_t header, uint8_t b0, uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4, uint8_t b5);
     int count_asics();
     bool sendHashFrequency(float target_freq);
-    void setVrFreqReg(uint32_t value);
+    bool setVrFreqReg(uint32_t value);
     bool doFrequencyTransition(float target_frequency);
-    void setChipAddress(uint8_t chipAddr);
+    bool setChipAddress(uint8_t chipAddr);
     void sendReadAddress(void);
-    void sendChainInactive(void);
+    bool sendChainInactive(void);
     uint16_t reverseUint16(uint16_t num);
     bool receiveWork(asic_result_t *result);
 
@@ -131,10 +131,10 @@ protected:
 public:
     Asic();
     virtual const char* getName() = 0;
-    uint8_t sendWork(uint32_t job_id, bm_job *next_bm_job);
-    void sendRawJob(BM1368_job *job);
+    bool sendWork(uint32_t job_id, bm_job *next_bm_job, uint8_t &asic_job_id);
+    bool sendRawJob(BM1368_job *job);
     bool processWork(task_result *result);
-    void setJobDifficultyMask(int difficulty);
+    bool setJobDifficultyMask(int difficulty);
     bool setAsicFrequency(float frequency);
     // Advance a runtime PLL transition by at most one step. Unlike
     // setAsicFrequency(), this never sleeps and is safe to call from the power
@@ -147,8 +147,8 @@ public:
     virtual void readCounter(uint8_t reg);
     virtual uint16_t getSmallCoreCount() = 0;
 
-    void setVrFrequency(uint32_t freq);
-    void setVersionMask(uint32_t version_mask);
+    bool setVrFrequency(uint32_t freq);
+    bool setVersionMask(uint32_t version_mask);
     virtual uint32_t getDefaultVrFrequency() = 0;
 
     virtual uint8_t init(uint64_t frequency, uint16_t asic_count, uint32_t difficulty, uint32_t vrFrequency) = 0;

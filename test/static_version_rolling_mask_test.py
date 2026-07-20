@@ -19,8 +19,8 @@ class VersionRollingMaskContractTest(unittest.TestCase):
         source = ASIC_CPP.read_text()
 
         self.assertIn("ASIC_DEFAULT_VERSION_MASK", header)
-        self.assertIn("void setVersionMask(uint32_t version_mask);", header)
-        self.assertIn("void Asic::setVersionMask(uint32_t version_mask)", source)
+        self.assertIn("bool setVersionMask(uint32_t version_mask);", header)
+        self.assertIn("bool Asic::setVersionMask(uint32_t version_mask)", source)
         self.assertRegex(source, r"version_mask\s*>>\s*13")
         self.assertRegex(source, r"&\s*0xFFFF")
         self.assertRegex(source, r"send6\(CMD_WRITE_ALL,\s*0x00,\s*0xA4,\s*0x90,\s*0x00")

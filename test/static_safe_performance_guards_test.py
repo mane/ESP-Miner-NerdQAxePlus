@@ -28,9 +28,10 @@ class SafePerformanceGuardsContractTest(unittest.TestCase):
     def test_vr_frequency_zero_is_rejected_before_register_math_and_nvs_save(self) -> None:
         asic_source = _read("components/bm1397/asic.cpp")
         vr_to_reg = _function_body(asic_source, "uint32_t Asic::vrFreqToReg")
-        set_vr = _function_body(asic_source, "void Asic::setVrFrequency")
+        set_vr = _function_body(asic_source, "bool Asic::setVrFrequency")
         self.assertIn("freq_hz == 0", vr_to_reg)
         self.assertIn("freq_hz == 0", set_vr)
+        self.assertIn("return false;", set_vr)
         self.assertLess(set_vr.index("freq_hz == 0"), set_vr.index("setVrFreqReg"))
 
         board_load = _function_body(_read("main/boards/board.cpp"), "void Board::loadSettings")

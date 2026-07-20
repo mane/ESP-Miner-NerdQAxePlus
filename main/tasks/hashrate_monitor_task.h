@@ -90,9 +90,6 @@ class HashrateMonitor {
     Board *m_board = nullptr;
     Asic *m_asic = nullptr;
 
-    void setChipHashrate(int nr, float temp);
-    float getChipHashrate(int nr);
-
   public:
     HashrateMonitor();
 
@@ -120,8 +117,7 @@ class HashrateMonitor {
     // Copies one coherent, thread-safe view of the per-ASIC counter telemetry.
     // A chip that has never reported uses ageMs == UINT32_MAX. Invalid hashrates
     // are normalized to zero so callers can serialize every sample safely.
-    size_t copyChipHashrateSnapshot(ChipHashrateSample *samples, size_t capacity,
-                                    uint64_t nowMs) const;
+    size_t copyChipHashrateSnapshot(ChipHashrateSample *samples, size_t capacity) const;
 
     // CAN slave hashrate accumulator.
     // Master calls this whenever telemetry arrives from slaves.

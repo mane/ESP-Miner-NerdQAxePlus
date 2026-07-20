@@ -194,11 +194,11 @@ bool Board::stepAsicFrequency(float target, float maxStepMhz) {
 
 // set and get version rolling frequency
 // requires loadSettings to update the variables
-void Board::setVrFrequency(uint32_t freq) {
+bool Board::setVrFrequency(uint32_t freq) {
     if (!m_asics) {
-        return;
+        return false;
     }
-    m_asics->setVrFrequency(freq);
+    return m_asics->setVrFrequency(freq);
 }
 
 bool Board::validateVoltage(float core_voltage) {

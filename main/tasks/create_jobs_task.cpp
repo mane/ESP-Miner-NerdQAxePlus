@@ -510,7 +510,7 @@ void create_jobs_task(void *pvParameters)
             continue;
         }
 
-        int asic_job_id = -1;
+        uint8_t asic_job_id = 0;
         {
             // Hold the same lock used by clean/invalidate through hardware send
             // and registry publication. The generation catches changes that
@@ -522,13 +522,29 @@ void create_jobs_task(void *pvParameters)
                 continue;
             }
 
-            asics->setJobDifficultyMask(next_job->asic_diff);
+            if (!asics->setJobDifficultyMask(next_job->asic_diff)) {
+                ESP_LOGE(TAG, "(%s) Dropping ASIC job: difficulty-mask TX failed", active_pool_str);
+                free_bm_job(next_job);
+                continue;
+            }
 
             if (!has_active_version_mask || active_version_mask != next_job->version_mask) {
-                asics->setVersionMask(next_job->version_mask);
+                if (!asics->setVersionMask(next_job->version_mask)) {
+                    ESP_LOGE(TAG, "(%s) Dropping ASIC job: version-mask TX failed", active_pool_str);
+                    free_bm_job(next_job);
+                    continue;
+                }
                 active_version_mask = next_job->version_mask;
                 has_active_version_mask = true;
             }
+
+            uint8_t sent_job_id = 0;
+            if (!asics->sendWork(extranonce_2, next_job, sent_job_id)) {
+                ESP_LOGE(TAG, "(%s) Dropping ASIC job: work TX failed", active_pool_str);
+                free_bm_job(next_job);
+                continue;
+            }
+            asic_job_id = sent_job_id;
 
             uint64_t current_time = esp_timer_get_time();
             if (last_submit_time) {
@@ -536,7 +552,6 @@ void create_jobs_task(void *pvParameters)
             }
             last_submit_time = current_time;
 
-            asic_job_id = asics->sendWork(extranonce_2, next_job);
             ESP_LOGD(TAG, "(%s) Sent Job (%d): %02X", active_pool_str, active_pool, asic_job_id);
             asicJobs.storeJob(next_job, asic_job_id);
             extranonce_2++;
@@ -548,7 +563,7 @@ void create_jobs_task(void *pvParameters)
                 has_active_slave_version_mask[slave] = false;
                 continue;
             }
-            uint32_t e2 = can_make_extranonce2(slave, slave_counters[slave]++);
+            uint32_t e2 = can_make_extranonce2(slave, slave_counters[slave]);
 
             bm_job *slave_job = nullptr;
             uint64_t slave_job_generation = 0;
@@ -572,13 +587,24 @@ void create_jobs_task(void *pvParameters)
                 if (!has_active_slave_version_mask[slave] || active_slave_version_mask[slave] != slave_job->version_mask) {
                     uint8_t payload[1 + sizeof(slave_job->version_mask)] = {CAN_CMD_SET_VERSION_MASK};
                     memcpy(payload + 1, &slave_job->version_mask, sizeof(slave_job->version_mask));
-                    can_send_settings_cmd(slave, payload, sizeof(payload));
+                    if (!can_send_settings_cmd(slave, payload, sizeof(payload))) {
+                        ESP_LOGE(TAG, "(%s) Dropping CAN job for slave %u: version-mask TX failed",
+                                 active_pool_str, (unsigned)slave);
+                        free_bm_job(slave_job);
+                        continue;
+                    }
                     active_slave_version_mask[slave] = slave_job->version_mask;
                     has_active_slave_version_mask[slave] = true;
                 }
 
-                can_send_raw_job(slave, (uint8_t) asic_job_id, slave_job);
+                if (!can_send_raw_job(slave, asic_job_id, slave_job)) {
+                    ESP_LOGE(TAG, "(%s) Dropping CAN job for slave %u: work TX failed",
+                             active_pool_str, (unsigned)slave);
+                    free_bm_job(slave_job);
+                    continue;
+                }
                 slaveAsicJobs[slave].storeJob(slave_job, asic_job_id);
+                slave_counters[slave]++;
                 // slaveAsicJobs owns slave_job now — do not free here
             }
         }

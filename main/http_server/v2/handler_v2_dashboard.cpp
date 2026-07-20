@@ -105,8 +105,7 @@ esp_err_t GET_V2_dashboard(httpd_req_t *req)
                 : nullptr;
             const size_t snapshotCount = chipSamples
                 ? HASHRATE_MONITOR.copyChipHashrateSnapshot(
-                      chipSamples, (size_t) asicCount,
-                      (uint64_t) (esp_timer_get_time() / 1000ULL))
+                      chipSamples, (size_t) asicCount)
                 : 0;
             for (int i = 0; i < asicCount; ++i) {
                 if ((size_t) i < snapshotCount) {

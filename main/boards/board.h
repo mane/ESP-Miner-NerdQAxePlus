@@ -138,7 +138,7 @@ public:
     bool isSupportedAsicFrequency(uint32_t frequency) const;
     bool validateVoltage(float core_voltage);
 
-    void setVrFrequency(uint32_t freq);
+    bool setVrFrequency(uint32_t freq);
 
     // abstract common methos
     virtual bool setVoltage(float core_voltage) = 0;

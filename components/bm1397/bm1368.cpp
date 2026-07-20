@@ -42,65 +42,73 @@ uint8_t BM1368::init(uint64_t frequency, uint16_t asic_count, uint32_t difficult
 {
     // reset is done externally to not have board dependencies
 
-    // enable and set default version rolling mask
-    setVersionMask(ASIC_DEFAULT_VERSION_MASK);
-
-    // enable and set default version rolling mask (again)
-    setVersionMask(ASIC_DEFAULT_VERSION_MASK);
-
-    // enable and set default version rolling mask (again)
-    setVersionMask(ASIC_DEFAULT_VERSION_MASK);
-
-    // enable and set default version rolling mask (again)
-    setVersionMask(ASIC_DEFAULT_VERSION_MASK);
+    // Enable and set the default version rolling mask. Repeated writes are
+    // required by the BM1368 cold-start sequence.
+    if (!setVersionMask(ASIC_DEFAULT_VERSION_MASK) ||
+        !setVersionMask(ASIC_DEFAULT_VERSION_MASK) ||
+        !setVersionMask(ASIC_DEFAULT_VERSION_MASK) ||
+        !setVersionMask(ASIC_DEFAULT_VERSION_MASK)) {
+        ESP_LOGE(TAG, "Failed initial version-mask sequence");
+        return 0;
+    }
 
     int chip_counter = count_asics();
     ESP_LOGIE(chip_counter == asic_count, TAG, "%i chip(s) detected on the chain, expected %i", chip_counter, asic_count);
 
     // enable and set default version rolling mask (again)
-    setVersionMask(ASIC_DEFAULT_VERSION_MASK);
+    if (!setVersionMask(ASIC_DEFAULT_VERSION_MASK)) {
+        ESP_LOGE(TAG, "Failed post-detection version-mask write");
+        return 0;
+    }
 
     // Reg_A8
-    send6(CMD_WRITE_ALL, 0x00, 0xA8, 0x00, 0x07, 0x00, 0x00);
-
-    // Misc Control
-    send6(CMD_WRITE_ALL, 0x00, 0x18, 0xFF, 0x0F, 0xC1, 0x00);
-
-    // chain inactive
-    sendChainInactive();
+    if (!send6(CMD_WRITE_ALL, 0x00, 0xA8, 0x00, 0x07, 0x00, 0x00) ||
+        // Misc Control
+        !send6(CMD_WRITE_ALL, 0x00, 0x18, 0xFF, 0x0F, 0xC1, 0x00) ||
+        // chain inactive
+        !sendChainInactive()) {
+        ESP_LOGE(TAG, "Failed broadcast pre-address initialization");
+        return 0;
+    }
 
     // set chip address - distribute evenly across 0-255 range
     m_addressInterval = (chip_counter > 0) ? (256 / next_power_of_two(chip_counter)) : 2;
     for (uint8_t i = 0; i < chip_counter; i++) {
-        setChipAddress(i * m_addressInterval);
+        if (!setChipAddress(i * m_addressInterval)) {
+            ESP_LOGE(TAG, "Failed to set address for ASIC %u", (unsigned)i);
+            return 0;
+        }
     }
 
     // Core Register Control
-    send6(CMD_WRITE_ALL, 0x00, 0x3C, 0x80, 0x00, 0x8B, 0x00);
-
-    // Core Register Control
-    send6(CMD_WRITE_ALL, 0x00, 0x3C, 0x80, 0x00, 0x80, 0x18);
-
-    setJobDifficultyMask(difficulty);
-
-    // Analog Mux Control
-    send6(CMD_WRITE_ALL, 0x00, 0x54, 0x00, 0x00, 0x00, 0x03);
-
-    // Set the IO Driver Strength on chip 00
-    send6(CMD_WRITE_ALL, 0x00, 0x58, 0x02, 0x11, 0x11, 0x11);
+    if (!send6(CMD_WRITE_ALL, 0x00, 0x3C, 0x80, 0x00, 0x8B, 0x00) ||
+        // Core Register Control
+        !send6(CMD_WRITE_ALL, 0x00, 0x3C, 0x80, 0x00, 0x80, 0x18) ||
+        !setJobDifficultyMask(difficulty) ||
+        // Analog Mux Control
+        !send6(CMD_WRITE_ALL, 0x00, 0x54, 0x00, 0x00, 0x00, 0x03) ||
+        // Set the IO Driver Strength on chip 00
+        !send6(CMD_WRITE_ALL, 0x00, 0x58, 0x02, 0x11, 0x11, 0x11)) {
+        ESP_LOGE(TAG, "Failed broadcast core initialization");
+        return 0;
+    }
 
     for (uint8_t i = 0; i < chip_counter; i++) {
         uint8_t addr = i * m_addressInterval;
-        // Reg_A8
-        send6(CMD_WRITE_SINGLE, addr, 0xA8, 0x00, 0x07, 0x01, 0xF0);
-        // Misc Control
-        send6(CMD_WRITE_SINGLE, addr, 0x18, 0xF0, 0x00, 0xC1, 0x00);
-        // Core Register Control
-        send6(CMD_WRITE_SINGLE, addr, 0x3C, 0x80, 0x00, 0x8B, 0x00);
-        // Core Register Control
-        send6(CMD_WRITE_SINGLE, addr, 0x3C, 0x80, 0x00, 0x80, 0x18);
-        // Core Register Control
-        send6(CMD_WRITE_SINGLE, addr, 0x3C, 0x80, 0x00, 0x82, 0xAA);
+        if (
+            // Reg_A8
+            !send6(CMD_WRITE_SINGLE, addr, 0xA8, 0x00, 0x07, 0x01, 0xF0) ||
+            // Misc Control
+            !send6(CMD_WRITE_SINGLE, addr, 0x18, 0xF0, 0x00, 0xC1, 0x00) ||
+            // Core Register Control
+            !send6(CMD_WRITE_SINGLE, addr, 0x3C, 0x80, 0x00, 0x8B, 0x00) ||
+            // Core Register Control
+            !send6(CMD_WRITE_SINGLE, addr, 0x3C, 0x80, 0x00, 0x80, 0x18) ||
+            // Core Register Control
+            !send6(CMD_WRITE_SINGLE, addr, 0x3C, 0x80, 0x00, 0x82, 0xAA)) {
+            ESP_LOGE(TAG, "Failed register initialization for ASIC %u", (unsigned)i);
+            return 0;
+        }
     }
 
     if (!doFrequencyTransition(frequency)) {
@@ -109,10 +117,11 @@ uint8_t BM1368::init(uint64_t frequency, uint16_t asic_count, uint32_t difficult
         return 0;
     }
 
-    // set 0x10
-    setVrFrequency(vrFrequency);
-
-    setVersionMask(ASIC_DEFAULT_VERSION_MASK);
+    // set 0x10 and restore the default version mask
+    if (!setVrFrequency(vrFrequency) || !setVersionMask(ASIC_DEFAULT_VERSION_MASK)) {
+        ESP_LOGE(TAG, "Failed final version-rolling configuration");
+        return 0;
+    }
 
     return chip_counter;
 }

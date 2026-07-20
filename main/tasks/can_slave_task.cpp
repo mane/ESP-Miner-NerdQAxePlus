@@ -201,8 +201,12 @@ static void handle_settings_cmd(const uint8_t *p, size_t len)
                 memcpy(&version_mask, p + 1, sizeof(version_mask));
                 Asic *asics = SYSTEM_MODULE.getBoard()->getAsics();
                 if (asics) {
-                    asics->setVersionMask(version_mask);
-                    ESP_LOGI(TAG, "CMD SET_VERSION_MASK %08lX → applied", (unsigned long) version_mask);
+                    if (asics->setVersionMask(version_mask)) {
+                        ESP_LOGI(TAG, "CMD SET_VERSION_MASK %08lX → applied", (unsigned long) version_mask);
+                    } else {
+                        ESP_LOGE(TAG, "CMD SET_VERSION_MASK %08lX failed: ASIC UART TX error",
+                                 (unsigned long) version_mask);
+                    }
                 } else {
                     ESP_LOGW(TAG, "CMD SET_VERSION_MASK %08lX ignored: ASIC not ready", (unsigned long) version_mask);
                 }
@@ -358,7 +362,6 @@ void can_slave_task(void *pvParameters)
 
         if (seq == CAN_SEQ_LAST) {
             in_frame = false;
-            last_job = now; // reset timeout on successful job
 
             if (buf_len != JOB_PAYLOAD_LEN) {
                 ESP_LOGW(TAG, "unexpected job size %d (expected %d)", buf_len, JOB_PAYLOAD_LEN);
@@ -369,12 +372,17 @@ void can_slave_task(void *pvParameters)
             uint32_t pool_diff;
             memcpy(&pool_diff, buf + sizeof(BM1368_job), sizeof(uint32_t));
 
+            ESP_LOGI(TAG, "RX JOB job_id=%02X pool_diff=%lu → sendRawJob", job->job_id, pool_diff);
+            s_job_valid[job->job_id] = false;
+            if (!asics->sendRawJob(job)) {
+                ESP_LOGE(TAG, "RX JOB job_id=%02X dropped: ASIC UART TX failed", job->job_id);
+                continue;
+            }
+
             s_jobs[job->job_id]       = *job;
             s_pool_diffs[job->job_id] = pool_diff;
             s_job_valid[job->job_id]  = true;
-
-            ESP_LOGI(TAG, "RX JOB job_id=%02X pool_diff=%lu → sendRawJob", job->job_id, pool_diff);
-            asics->sendRawJob(job);
+            last_job = now; // reset timeout only after a successful ASIC TX
         }
     }
 }

@@ -98,7 +98,7 @@ void can_send_config(uint8_t slave_id, const can_slave_config_t *c);
  * Send a settings command from master to one slave.
  * payload: cmd byte + value bytes (≤6 bytes total, fits in single CAN frame).
  */
-void can_send_settings_cmd(uint8_t slave_id, const uint8_t *payload, size_t len);
+bool can_send_settings_cmd(uint8_t slave_id, const uint8_t *payload, size_t len);
 
 /**
  * Send a raw job to one slave over CAN.
@@ -109,7 +109,7 @@ void can_send_settings_cmd(uint8_t slave_id, const uint8_t *payload, size_t len)
  * @param job_id    ASIC job ID byte (from jobToAsicId())
  * @param job       fully built bm_job for this slave (merkle_root already slave-specific)
  */
-void can_send_raw_job(uint8_t slave_id, uint8_t job_id, const bm_job *job);
+bool can_send_raw_job(uint8_t slave_id, uint8_t job_id, const bm_job *job);
 
 /**
  * Returns the extranonce_2 value to use for a given slave and counter.

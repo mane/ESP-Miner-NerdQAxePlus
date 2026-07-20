@@ -79,8 +79,13 @@ static esp_err_t can_transmit_with_recovery(twai_message_t *frame)
     return err;
 }
 
-static void send_multiframe(uint32_t can_id, const uint8_t *data, size_t len)
+static bool send_multiframe(uint32_t can_id, const uint8_t *data, size_t len)
 {
+    if (!data || len == 0) {
+        ESP_LOGE(TAG, "Refusing empty CAN multiframe payload for id=0x%03lX", can_id);
+        return false;
+    }
+
     size_t  offset = 0;
     uint8_t seq    = 0;
 
@@ -95,10 +100,15 @@ static void send_multiframe(uint32_t can_id, const uint8_t *data, size_t len)
         frame.data[0]          = is_last ? CAN_SEQ_LAST : seq++;
         memcpy(&frame.data[1], data + offset, chunk);
 
-        can_transmit_with_recovery(&frame);
+        if (can_transmit_with_recovery(&frame) != ESP_OK) {
+            ESP_LOGE(TAG, "Aborting CAN multiframe TX id=0x%03lX at sequence %u",
+                     can_id, (unsigned)frame.data[0]);
+            return false;
+        }
 
         offset += chunk;
     }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,17 +170,27 @@ void can_send_config(uint8_t slave_id, const can_slave_config_t *c)
     tx_unlock();
 }
 
-void can_send_settings_cmd(uint8_t slave_id, const uint8_t *payload, size_t len)
+bool can_send_settings_cmd(uint8_t slave_id, const uint8_t *payload, size_t len)
 {
+    if (!payload || len == 0) {
+        ESP_LOGE(TAG, "Refusing empty settings command for slave %u", (unsigned)slave_id);
+        return false;
+    }
     uint32_t can_id = CAN_ID_SETTINGS_BASE | (slave_id & 0x7F);
-    ESP_LOGD(TAG, "TX SETTINGS slave=%d cmd=0x%02X", slave_id, len ? payload[0] : 0xFF);
+    ESP_LOGD(TAG, "TX SETTINGS slave=%d cmd=0x%02X", slave_id, payload[0]);
     tx_lock();
-    send_multiframe(can_id, payload, len);
+    bool sent = send_multiframe(can_id, payload, len);
     tx_unlock();
+    return sent;
 }
 
-void can_send_raw_job(uint8_t slave_id, uint8_t job_id, const bm_job *job)
+bool can_send_raw_job(uint8_t slave_id, uint8_t job_id, const bm_job *job)
 {
+    if (!job) {
+        ESP_LOGE(TAG, "Refusing null CAN job for slave %u", (unsigned)slave_id);
+        return false;
+    }
+
     BM1368_job raw = {};
 
     raw.job_id         = job_id;
@@ -190,6 +210,7 @@ void can_send_raw_job(uint8_t slave_id, uint8_t job_id, const bm_job *job)
     uint32_t can_id = CAN_ID_JOB_BASE | (slave_id & 0x7F);
     ESP_LOGD(TAG, "TX JOB slave=%d ntime=%08lX pool_diff=%lu", slave_id, job->ntime, job->pool_diff);
     tx_lock();
-    send_multiframe(can_id, payload, sizeof(payload));
+    bool sent = send_multiframe(can_id, payload, sizeof(payload));
     tx_unlock();
+    return sent;
 }
