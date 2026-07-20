@@ -32,7 +32,7 @@ uint16_t Asic::reverseUint16(uint16_t num)
     return (num >> 8) | (num << 8);
 }
 
-void Asic::send(uint8_t header, uint8_t *data, uint8_t data_len)
+bool Asic::send(uint8_t header, uint8_t *data, uint8_t data_len)
 {
     packet_type_t packet_type = (header & TYPE_JOB) ? JOB_PACKET : CMD_PACKET;
     uint8_t total_length = (packet_type == JOB_PACKET) ? (data_len + 6) : (data_len + 5);
@@ -62,7 +62,18 @@ void Asic::send(uint8_t header, uint8_t *data, uint8_t data_len)
     }
 
     // send serial data
-    SERIAL_send(buf, total_length);
+    const int written = SERIAL_send(buf, total_length);
+    if (written < 0) {
+        ESP_LOGE(TAG, "ASIC UART TX failed: %d (expected %u bytes)",
+                 written, (unsigned)total_length);
+        return false;
+    }
+    if (written != total_length) {
+        ESP_LOGE(TAG, "ASIC UART TX short write: %d/%u bytes",
+                 written, (unsigned)total_length);
+        return false;
+    }
+    return true;
 }
 
 void Asic::send6(uint8_t header, uint8_t b0, uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4, uint8_t b5) {
@@ -97,6 +108,28 @@ bool Asic::sendHashFrequency(float target_freq) {
         ESP_LOGE(TAG, "Invalid target frequency: %.2fMHz", target_freq);
         return false;
     }
+
+    // Qualified BM1368 low-VCO point. Keep the cached control frequency at
+    // the nominal target so PLL ramping and governor comparisons converge on
+    // 540MHz, while reporting the physical PLL output separately.
+    constexpr float BM1368_540_NOMINAL_MHZ = 540.0f;
+    constexpr float BM1368_540_ACTUAL_MHZ = 540.625f;
+    constexpr float PLL_TARGET_EPSILON_MHZ = 0.001f;
+    if (strcmp(getName(), "BM1368") == 0 &&
+        fabsf(target_freq - BM1368_540_NOMINAL_MHZ) <= PLL_TARGET_EPSILON_MHZ) {
+        uint8_t freqbuf[6] = {0x00, 0x08, 0x40, 0xAD, 0x02, 0x30};
+        if (!send(CMD_WRITE_ALL, freqbuf, sizeof(freqbuf))) {
+            ESP_LOGE(TAG, "Failed to send BM1368 low-VCO PLL settings for 540MHz");
+            return false;
+        }
+
+        ESP_LOGI(TAG, "Setting BM1368 Frequency to 540.00MHz "
+                      "(540.625MHz actual, low-VCO)");
+        m_current_frequency = BM1368_540_NOMINAL_MHZ;
+        m_actual_current_frequency = BM1368_540_ACTUAL_MHZ;
+        return true;
+    }
+
     float min_diff = 2.0;
     uint8_t freqbuf[6] = {0x00, 0x08, 0x40, 0xA0, 0x02, 0x41};
     int postdiv_min = 255;
@@ -143,7 +176,10 @@ bool Asic::sendHashFrequency(float target_freq) {
     freqbuf[4] = best_refdiv;
     freqbuf[5] = (((best_postdiv1 - 1) & 0xf) << 4) | ((best_postdiv2 - 1) & 0xf);
 
-    send(CMD_WRITE_ALL, freqbuf, sizeof(freqbuf));
+    if (!send(CMD_WRITE_ALL, freqbuf, sizeof(freqbuf))) {
+        ESP_LOGE(TAG, "Failed to send PLL settings for %.2fMHz", target_freq);
+        return false;
+    }
     //ESP_LOG_BUFFER_HEX(TAG, freqbuf, sizeof(freqbuf));
 
     ESP_LOGI(TAG, "Setting Frequency to %.2fMHz (%.2f) (error: %.2fMHZ)", target_freq, best_newf, min_diff);
@@ -265,8 +301,8 @@ bool Asic::doFrequencyTransition(float target_frequency) {
     // BM1368 initialization writes the version-rolling registers immediately
     // after this blocking ramp. Preserve a full settle interval after the last
     // PLL command as well as between steps, otherwise a cold boot can start the
-    // hashing cores in a degraded state even though the requested clock reads
-    // back correctly. Runtime governor steps use stepAsicFrequency() directly
+    // hashing cores in a degraded state even though the requested clock is
+    // cached/reported correctly. Runtime governor steps use stepAsicFrequency() directly
     // and therefore remain non-blocking.
     if (pllCommandSent) {
         vTaskDelay(pdMS_TO_TICKS(100));

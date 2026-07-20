@@ -155,7 +155,7 @@ export class SystemService {
   static defaultDashboardV2(): IDashboardV2 {
     return {
       system:      { uptime: 0, shutdown: false, boardError: 0, overheatTemp: 0 },
-      performance: { hashRateTimestamp: 0, hashRate: 0, hashRate1m: 0, hashRate10m: 0, hashRate1h: 0, hashRate1d: 0, bestDiff: 0, bestSessionDiff: 0, sharesAccepted: 0, sharesRejected: 0, duplicateHWNonces: 0, shareQueueDrops: 0, frequency: 0, configuredFrequency: 0, actualFrequency: 0, asicCount: 0, smallCoreCount: 0, hashrateGovernor: { enabled: false, targetFrequency: 0, lastStableFrequency: 0, utilization: 0, state: 'disabled', lastReason: 'disabled' } },
+      performance: { hashRateTimestamp: 0, hashRate: 0, hashRate1m: 0, hashRate10m: 0, hashRate1h: 0, hashRate1d: 0, bestDiff: 0, bestSessionDiff: 0, sharesAccepted: 0, sharesRejected: 0, duplicateHWNonces: 0, shareQueueDrops: 0, frequency: 0, configuredFrequency: 0, actualFrequency: 0, asicCount: 0, smallCoreCount: 0, chipHashrates: [], chipHashrateAgesMs: [], hashrateGovernor: { enabled: false, targetFrequency: 0, lastStableFrequency: 0, utilization: 0, state: 'disabled', lastReason: 'disabled' } },
       power:       { watts: 0, min: 0, max: 0, voltage: 0, voltageMin: 0, voltageMax: 0, currentA: 0, currentAMin: 0, currentAMax: 0, coreVoltageActual: 0 },
       thermal:     { asicTemp: 0, vrTemp: 0, vrTempInt: 0, asicTemps: [], fans: [{ speed: 0, rpm: 0 }] },
       stratum:     { poolMode: 0, activePoolMode: 0, usingFallback: false, totalBestDiff: 0, poolBalance: 0, pools: [{ host: '', port: 0, user: '', connected: false, activeProtocol: 0, encrypted: false, accepted: 0, rejected: 0, bestDiff: 0, pingRtt: 0, pingLoss: 0, poolDifficulty: 0 }] },

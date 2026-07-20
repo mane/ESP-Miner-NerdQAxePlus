@@ -25,6 +25,8 @@ export interface IDashboardV2Performance {
     actualFrequency: number;
     asicCount: number;
     smallCoreCount: number;
+    chipHashrates: number[];
+    chipHashrateAgesMs: number[];
     hashrateGovernor: {
         enabled: boolean;
         targetFrequency: number;

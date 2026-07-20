@@ -103,7 +103,11 @@ uint8_t BM1368::init(uint64_t frequency, uint16_t asic_count, uint32_t difficult
         send6(CMD_WRITE_SINGLE, addr, 0x3C, 0x80, 0x00, 0x82, 0xAA);
     }
 
-    doFrequencyTransition(frequency);
+    if (!doFrequencyTransition(frequency)) {
+        ESP_LOGE(TAG, "Failed to initialize ASIC frequency to %lluMHz",
+                 (unsigned long long)frequency);
+        return 0;
+    }
 
     // set 0x10
     setVrFrequency(vrFrequency);

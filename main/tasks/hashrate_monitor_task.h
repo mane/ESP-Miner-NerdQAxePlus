@@ -53,12 +53,16 @@ template <size_t N> class Median {
 
 
 class HashrateMonitor {
+  public:
+    struct ChipHashrateSample {
+        float hashrateGhs = 0.0f;
+        uint32_t ageMs = UINT32_MAX;
+    };
+
   private:
-    // confirmed by long-term averages
-    static constexpr double ERRATA_FACTOR = 1.046;
     char m_logBuffer[256] = {0};
 
-    pthread_mutex_t m_mutex = PTHREAD_MUTEX_INITIALIZER;
+    mutable pthread_mutex_t m_mutex = PTHREAD_MUTEX_INITIALIZER;
 
     // Task + config
     uint32_t m_period_ms = 1000;
@@ -112,6 +116,12 @@ class HashrateMonitor {
     // recently. A stale partial chain must never qualify an automatic upclock.
     bool getFreshSmoothedTotalChipHashrate(uint64_t nowMs, uint32_t maxAgeMs,
                                           float *hashrateGhs) const;
+
+    // Copies one coherent, thread-safe view of the per-ASIC counter telemetry.
+    // A chip that has never reported uses ageMs == UINT32_MAX. Invalid hashrates
+    // are normalized to zero so callers can serialize every sample safely.
+    size_t copyChipHashrateSnapshot(ChipHashrateSample *samples, size_t capacity,
+                                    uint64_t nowMs) const;
 
     // CAN slave hashrate accumulator.
     // Master calls this whenever telemetry arrives from slaves.

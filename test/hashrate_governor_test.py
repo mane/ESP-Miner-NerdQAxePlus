@@ -157,6 +157,9 @@ static void testVerified525To550ProbeFits69WEnvelope()
 
 static void testQualified540StepAndProbeRollback()
 {
+    constexpr double lowVcoActualMhz = 25.0 * 0xAD / (2.0 * 4.0 * 1.0);
+    assert(std::fabs(lowVcoActualMhz - 540.625) < 1e-9);
+
     Governor governor;
     assert(governor.configure({525, 540, 550, 575}, 525, limits()));
     assert(governor.setEnabled(true, 0));
@@ -167,7 +170,13 @@ static void testQualified540StepAndProbeRollback()
     assert(firstProbe.reason == Reason::PROBE_REQUESTED);
     assert(firstProbe.targetFrequencyMhz == 540);
 
+    // The control plane must continue to use the nominal 540MHz target. The
+    // physical low-VCO output is exposed separately as actualFrequency.
     Sample at540 = healthy(WARMUP_MS + OBSERVE_MS + 1, 540.0);
+    at540.hashrateGhs = Governor::theoreticalHashrateGhs(4, lowVcoActualMhz);
+    const double lowVcoRatio = Governor::hashrateRatio(at540);
+    assert(lowVcoRatio > 1.0011);
+    assert(lowVcoRatio < 1.0012);
     governor.update(at540);
     at540.nowMs += OBSERVE_MS;
     Decision accepted540 = governor.update(at540);

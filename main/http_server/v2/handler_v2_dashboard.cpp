@@ -13,6 +13,7 @@
 #include "ping_task.h"
 #include "tasks/can_master_task.h"
 #include "tasks/asic_result_task.h"
+#include <new>
 
 static const char *TAG = "http_v2_dashboard";
 
@@ -95,6 +96,29 @@ esp_err_t GET_V2_dashboard(httpd_req_t *req)
         perf["actualFrequency"] = board->getActualAsicFrequency();
         perf["asicCount"]       = board->getAsicCount();
         perf["smallCoreCount"]  = board->getAsics() ? board->getAsics()->getSmallCoreCount() : 0;
+        {
+            const int asicCount = board->getAsicCount();
+            JsonArray chipHashrates = perf["chipHashrates"].to<JsonArray>();
+            JsonArray chipHashrateAgesMs = perf["chipHashrateAgesMs"].to<JsonArray>();
+            HashrateMonitor::ChipHashrateSample *chipSamples = asicCount > 0
+                ? new (std::nothrow) HashrateMonitor::ChipHashrateSample[(size_t) asicCount]
+                : nullptr;
+            const size_t snapshotCount = chipSamples
+                ? HASHRATE_MONITOR.copyChipHashrateSnapshot(
+                      chipSamples, (size_t) asicCount,
+                      (uint64_t) (esp_timer_get_time() / 1000ULL))
+                : 0;
+            for (int i = 0; i < asicCount; ++i) {
+                if ((size_t) i < snapshotCount) {
+                    chipHashrates.add(chipSamples[i].hashrateGhs);
+                    chipHashrateAgesMs.add(chipSamples[i].ageMs);
+                } else {
+                    chipHashrates.add(0.0f);
+                    chipHashrateAgesMs.add(UINT32_MAX);
+                }
+            }
+            delete[] chipSamples;
+        }
         PowerManagementTask::HashrateGovernorStatus governorStatus;
         POWER_MANAGEMENT_MODULE.copyHashrateGovernorStatus(&governorStatus);
         JsonObject governor = perf["hashrateGovernor"].to<JsonObject>();

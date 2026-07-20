@@ -103,7 +103,7 @@ protected:
     uint32_t m_asicDifficulty;
     uint8_t m_addressInterval = 2; ///< Chip address spacing (set during init)
 
-    void send(uint8_t header, uint8_t *data, uint8_t data_len);
+    bool send(uint8_t header, uint8_t *data, uint8_t data_len);
     void send2(uint8_t header, uint8_t b0, uint8_t b1);
     void send6(uint8_t header, uint8_t b0, uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4, uint8_t b5);
     int count_asics();

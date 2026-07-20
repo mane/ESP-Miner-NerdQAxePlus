@@ -199,6 +199,32 @@ bool HashrateMonitor::getFreshSmoothedTotalChipHashrate(uint64_t nowMs, uint32_t
     return true;
 }
 
+size_t HashrateMonitor::copyChipHashrateSnapshot(ChipHashrateSample *samples, size_t capacity,
+                                                 uint64_t nowMs) const
+{
+    if (!samples || capacity == 0) {
+        return 0;
+    }
+
+    const uint32_t now32 = (uint32_t) nowMs;
+    pthread_mutex_lock(&m_mutex);
+    if (!m_chipHashrate || !m_chipHashrateUpdatedMs || m_asicCount <= 0) {
+        pthread_mutex_unlock(&m_mutex);
+        return 0;
+    }
+
+    const size_t asicCount = (size_t) m_asicCount;
+    const size_t count = capacity < asicCount ? capacity : asicCount;
+    for (size_t i = 0; i < count; ++i) {
+        const float hashrate = m_chipHashrate[i];
+        const uint32_t updatedMs = m_chipHashrateUpdatedMs[i];
+        samples[i].hashrateGhs = isfinite(hashrate) && hashrate >= 0.0f ? hashrate : 0.0f;
+        samples[i].ageMs = updatedMs == 0 ? UINT32_MAX : now32 - updatedMs;
+    }
+    pthread_mutex_unlock(&m_mutex);
+    return count;
+}
+
 void HashrateMonitor::onRegisterReply(uint8_t asic_idx, uint32_t counterNow)
 {
     if (asic_idx >= m_asicCount) {
