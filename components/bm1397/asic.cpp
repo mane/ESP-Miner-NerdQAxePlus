@@ -250,14 +250,26 @@ bool Asic::doFrequencyTransition(float target_frequency) {
         return false;
     }
 
+    bool pllCommandSent = false;
     while (fabsf(m_current_frequency - target_frequency) > 0.001f) {
         if (!stepAsicFrequency(target_frequency)) {
             ESP_LOGE(TAG, "Failed PLL transition toward %.2fMHz", target_frequency);
             return false;
         }
+        pllCommandSent = true;
         if (fabsf(m_current_frequency - target_frequency) > 0.001f) {
             vTaskDelay(pdMS_TO_TICKS(100));
         }
+    }
+
+    // BM1368 initialization writes the version-rolling registers immediately
+    // after this blocking ramp. Preserve a full settle interval after the last
+    // PLL command as well as between steps, otherwise a cold boot can start the
+    // hashing cores in a degraded state even though the requested clock reads
+    // back correctly. Runtime governor steps use stepAsicFrequency() directly
+    // and therefore remain non-blocking.
+    if (pllCommandSent) {
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
     return true;
 }

@@ -25,6 +25,18 @@ def _function_body(source: str, signature: str) -> str:
 
 
 class MiningPerformanceContractTest(unittest.TestCase):
+    def test_blocking_pll_ramp_settles_after_its_final_command(self) -> None:
+        body = _function_body(_read("components/bm1397/asic.cpp"),
+                              "bool Asic::doFrequencyTransition")
+
+        final_settle = body.index("if (pllCommandSent)")
+        final_delay = body.index("vTaskDelay(pdMS_TO_TICKS(100));", final_settle)
+        loop_end = body.index("// BM1368 initialization writes")
+
+        self.assertLess(loop_end, final_settle)
+        self.assertLess(final_settle, final_delay)
+        self.assertIn("Runtime governor steps use stepAsicFrequency() directly", body)
+
     def test_nerdqaxeplus_uses_bm1368_and_refreshes_vr_frequency(self) -> None:
         body = _function_body(_read("main/boards/nerdqaxeplus.cpp"), "NerdQaxePlus::NerdQaxePlus()")
         asic_pos = body.index("m_asics = new BM1368();")
