@@ -53,6 +53,7 @@ class MiningPerformanceContractTest(unittest.TestCase):
         self.assertLess(actual_cache, success_return)
 
         for nominal, actual, divider in (
+            (528, "528.125f", "0xA9"),
             (531, "531.250f", "0xAA"),
             (534, "534.375f", "0xAB"),
             (537, "537.500f", "0xAC"),
@@ -66,7 +67,7 @@ class MiningPerformanceContractTest(unittest.TestCase):
             self.assertIn(byte, presets)
         self.assertIn("payload[3] = preset.feedbackDivider", presets)
         self.assertIn(
-            "m_asicFrequencies = {400, 425, 450, 475, 490, 500, 525, 531, 534, 537, 540, 550};",
+            "m_asicFrequencies = {400, 425, 450, 475, 490, 500, 525, 528, 531, 534, 537, 540, 550};",
             board,
         )
 

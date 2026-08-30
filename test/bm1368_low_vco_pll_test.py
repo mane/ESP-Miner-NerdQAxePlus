@@ -40,6 +40,7 @@ static void check(float nominal, float actual, uint8_t feedbackDivider)
 
 int main()
 {
+    check(528.0f, 528.125f, 0xA9);
     check(531.0f, 531.250f, 0xAA);
     check(534.0f, 534.375f, 0xAB);
     check(537.0f, 537.500f, 0xAC);
@@ -48,7 +49,7 @@ int main()
     LowVcoPreset preset{};
     assert(!BM1368Pll::findLowVcoPreset(525.0f, &preset));
     assert(!BM1368Pll::findLowVcoPreset(550.0f, &preset));
-    assert(!BM1368Pll::findLowVcoPreset(531.01f, &preset));
+    assert(!BM1368Pll::findLowVcoPreset(528.01f, &preset));
     assert(!BM1368Pll::findLowVcoPreset(531.0f, nullptr));
     return 0;
 }

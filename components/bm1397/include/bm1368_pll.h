@@ -13,11 +13,13 @@ struct LowVcoPreset {
 
 // Explicit low-VCO BM1368 points for register 0x08. They continue the
 // proven 525MHz/A8 and 540MHz/AD sequence without entering the high-VCO mode:
+//   528MHz nominal -> 528.125MHz physical, feedback divider 0xA9
 //   531MHz nominal -> 531.250MHz physical, feedback divider 0xAA
 //   534MHz nominal -> 534.375MHz physical, feedback divider 0xAB
 //   537MHz nominal -> 537.500MHz physical, feedback divider 0xAC
 //   540MHz nominal -> 540.625MHz physical, feedback divider 0xAD
 static constexpr LowVcoPreset LOW_VCO_PRESETS[] = {
+    {528, 528.125f, 0xA9},
     {531, 531.250f, 0xAA},
     {534, 534.375f, 0xAB},
     {537, 537.500f, 0xAC},

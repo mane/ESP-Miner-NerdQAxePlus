@@ -81,7 +81,7 @@ class HashrateGovernorIntegrationContractTest(unittest.TestCase):
         self.assertIn("unsupported configured ASIC frequency", board)
 
         nerdqaxe = _read("main/boards/nerdqaxeplus.cpp")
-        self.assertIn("525, 531, 534, 537, 540, 550", nerdqaxe)
+        self.assertIn("525, 528, 531, 534, 537, 540, 550", nerdqaxe)
 
     def test_http_reads_one_locked_governor_snapshot(self) -> None:
         header = _read("main/tasks/power_management_task.h")
