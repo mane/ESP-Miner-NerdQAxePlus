@@ -39,12 +39,14 @@ class PowerManagementTask {
     Board* m_board = nullptr;
 
     HashrateGovernor::Governor m_hashrateGovernor;
+    HashrateGovernor::Limits m_governorLimits;
     HashrateGovernor::Reason m_governorReason = HashrateGovernor::Reason::DISABLED;
     HashrateGovernor::State m_governorState = HashrateGovernor::State::DISABLED;
     uint64_t m_lastTelemetryMs = 0;
     uint16_t m_runtimeFrequencyTarget = 0;
     uint16_t m_appliedCoreVoltageMillis = 0;
     uint16_t m_governorBaseFrequency = 0;
+    uint16_t m_governorBaseVoltageMillis = 0;
     uint16_t m_governorMaxFrequency = 0;
     uint16_t m_governorPowerLimit10 = 0;
     bool m_governorEnabled = false;
@@ -54,7 +56,8 @@ class PowerManagementTask {
 
     void checkVrFrequencyChanged();
     void readAndPublishPowerTelemetry();
-    void syncHashrateGovernorConfiguration(uint64_t nowMs);
+    void syncHashrateGovernorConfiguration(uint64_t nowMs,
+                                            const HashrateGovernor::Sample &sample);
     void updateHashrateGovernor(uint64_t nowMs);
     void applyRuntimeAsicSettings();
     const char *governorStateString() const;

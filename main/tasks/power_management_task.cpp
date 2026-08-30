@@ -24,6 +24,17 @@ static constexpr uint32_t HASHRATE_SAMPLE_MAX_AGE_MS = 12000;
 static constexpr uint16_t GOVERNOR_LOW_VOLTAGE_CAP_MHZ = 500;
 static constexpr uint16_t GOVERNOR_HIGH_FREQUENCY_MIN_MV = 1300;
 
+static bool sameGovernorLimits(const HashrateGovernor::Limits &left,
+                               const HashrateGovernor::Limits &right)
+{
+    return left.powerLimitWatts == right.powerLimitWatts &&
+           left.currentLimitAmps == right.currentLimitAmps &&
+           left.chipTemperatureLimitC == right.chipTemperatureLimitC &&
+           left.vrTemperatureLimitC == right.vrTemperatureLimitC &&
+           left.expectedChips == right.expectedChips &&
+           left.maxTelemetryAgeMs == right.maxTelemetryAgeMs;
+}
+
 // #define MEASURE_LOOP_TIME
 
 PowerManagementTask::PowerManagementTask()
@@ -221,9 +232,11 @@ void PowerManagementTask::readAndPublishPowerTelemetry()
     }
 }
 
-void PowerManagementTask::syncHashrateGovernorConfiguration(uint64_t nowMs)
+void PowerManagementTask::syncHashrateGovernorConfiguration(
+    uint64_t nowMs, const HashrateGovernor::Sample &sample)
 {
     const uint16_t baseFrequency = (uint16_t) m_board->getAsicFrequency();
+    const uint16_t baseVoltageMillis = (uint16_t) m_board->getAsicVoltageMillis();
     uint16_t maxFrequency = Config::getHashrateGovernorMaxFrequency();
     uint16_t powerLimit10 = Config::getHashrateGovernorPowerLimit10();
     const bool enabled = Config::isHashrateGovernorEnabled();
@@ -233,7 +246,7 @@ void PowerManagementTask::syncHashrateGovernorConfiguration(uint64_t nowMs)
     }
     if (maxFrequency < baseFrequency) maxFrequency = baseFrequency;
     bool voltageLimited = false;
-    if (m_board->getAsicVoltageMillis() < GOVERNOR_HIGH_FREQUENCY_MIN_MV &&
+    if (baseVoltageMillis < GOVERNOR_HIGH_FREQUENCY_MIN_MV &&
         maxFrequency > GOVERNOR_LOW_VOLTAGE_CAP_MHZ) {
         // Do not raise Vcore implicitly. At low persistent voltages, cap an
         // automatic probe at the highest qualified point <=500MHz. If the
@@ -250,17 +263,6 @@ void PowerManagementTask::syncHashrateGovernorConfiguration(uint64_t nowMs)
     }
     powerLimit10 = std::max<uint16_t>(300, std::min<uint16_t>(powerLimit10, 690));
 
-    if (m_governorConfigured && baseFrequency == m_governorBaseFrequency &&
-        maxFrequency == m_governorMaxFrequency && powerLimit10 == m_governorPowerLimit10 &&
-        enabled == m_governorEnabled) {
-        return;
-    }
-
-    if (voltageLimited) {
-        ESP_LOGW(TAG, "governor max limited to %uMHz: %umV Vcore is below the 1300mV high-frequency floor",
-                 maxFrequency, (unsigned int) m_board->getAsicVoltageMillis());
-    }
-
     HashrateGovernor::Limits limits;
     limits.powerLimitWatts = (double) powerLimit10 / 10.0;
     limits.currentLimitAmps = std::max(0.1f, std::min(5.9f, m_board->getMaxCurrentA() - 0.1f));
@@ -268,6 +270,17 @@ void PowerManagementTask::syncHashrateGovernorConfiguration(uint64_t nowMs)
     limits.vrTemperatureLimitC = std::min(75.0, std::max(40.0, (double) Config::getFanOverheatTemp(1) - 5.0));
     limits.expectedChips = (uint16_t) m_board->getAsicCount();
     limits.maxTelemetryAgeMs = HASHRATE_SAMPLE_MAX_AGE_MS;
+
+    // This runs every two seconds. Keep the unchanged path allocation-free,
+    // while including every safety-relevant field that can change at runtime.
+    // The board's qualified frequency table is immutable after initialization.
+    if (m_governorConfigured && baseFrequency == m_governorBaseFrequency &&
+        baseVoltageMillis == m_governorBaseVoltageMillis &&
+        maxFrequency == m_governorMaxFrequency &&
+        powerLimit10 == m_governorPowerLimit10 && enabled == m_governorEnabled &&
+        sameGovernorLimits(limits, m_governorLimits)) {
+        return;
+    }
 
     std::vector<uint16_t> governorFrequencies;
     governorFrequencies.reserve(m_board->getFrequencyOptions().size());
@@ -277,37 +290,74 @@ void PowerManagementTask::syncHashrateGovernorConfiguration(uint64_t nowMs)
         }
     }
 
-    m_governorConfigured = m_hashrateGovernor.configure(
-        governorFrequencies, baseFrequency, limits, maxFrequency);
-    if (!m_governorConfigured) {
-        ESP_LOGE(TAG, "failed to configure hashrate governor; using persistent base %uMHz", baseFrequency);
-        m_governorEnabled = false;
-        m_runtimeFrequencyTarget = baseFrequency;
-        m_governorState = HashrateGovernor::State::DISABLED;
-        m_governorReason = HashrateGovernor::Reason::INVALID_SAMPLE;
+    if (m_governorConfigured && enabled == m_governorEnabled &&
+        baseVoltageMillis == m_governorBaseVoltageMillis &&
+        m_hashrateGovernor.configurationMatches(
+            governorFrequencies, baseFrequency, limits, maxFrequency)) {
         return;
     }
 
-    m_hashrateGovernor.setEnabled(enabled, nowMs);
+    if (voltageLimited) {
+        ESP_LOGW(TAG, "governor max limited to %uMHz: %umV Vcore is below the 1300mV high-frequency floor",
+                 maxFrequency, (unsigned int) baseVoltageMillis);
+    }
+
+    const uint16_t previousRuntimeTarget = m_hashrateGovernor.runtimeTargetMhz();
+    const bool capOnlyCandidate =
+        m_governorConfigured && enabled && m_governorEnabled &&
+        baseFrequency == m_governorBaseFrequency &&
+        baseVoltageMillis == m_governorBaseVoltageMillis &&
+        maxFrequency != m_governorMaxFrequency;
+    const bool preserved = capOnlyCandidate &&
+        m_hashrateGovernor.reconfigureCapPreservingStable(
+            governorFrequencies, baseFrequency, limits, maxFrequency, sample);
+
+    if (!preserved) {
+        m_governorConfigured = m_hashrateGovernor.configure(
+            governorFrequencies, baseFrequency, limits, maxFrequency);
+        if (!m_governorConfigured) {
+            ESP_LOGE(TAG, "failed to configure hashrate governor; using persistent base %uMHz", baseFrequency);
+            m_governorEnabled = false;
+            m_runtimeFrequencyTarget = baseFrequency;
+            m_governorState = HashrateGovernor::State::DISABLED;
+            m_governorReason = HashrateGovernor::Reason::INVALID_SAMPLE;
+            return;
+        }
+        m_hashrateGovernor.setEnabled(enabled, nowMs);
+    }
+
     m_governorBaseFrequency = baseFrequency;
+    m_governorBaseVoltageMillis = baseVoltageMillis;
     m_governorMaxFrequency = maxFrequency;
     m_governorPowerLimit10 = powerLimit10;
+    m_governorLimits = limits;
     m_governorEnabled = enabled;
-    m_runtimeFrequencyTarget = baseFrequency;
+    m_runtimeFrequencyTarget = m_hashrateGovernor.runtimeTargetMhz();
     m_governorState = m_hashrateGovernor.state();
-    m_governorReason = enabled ? HashrateGovernor::Reason::WARMING_UP : HashrateGovernor::Reason::DISABLED;
-    m_governorEmergency = false;
+    m_governorReason = !enabled
+        ? HashrateGovernor::Reason::DISABLED
+        : (m_governorState == HashrateGovernor::State::OBSERVE
+            ? HashrateGovernor::Reason::OBSERVING
+            : HashrateGovernor::Reason::WARMING_UP);
 
-    ESP_LOGI(TAG, "hashrate governor %s: base=%uMHz max=%uMHz power=%.1fW",
-             enabled ? "enabled" : "disabled", baseFrequency, maxFrequency,
-             (double) powerLimit10 / 10.0);
+    // A reduced cap (including an aborted in-flight probe) must not spend
+    // several normal PLL increments above the newly allowed target. Keep the
+    // wider rollback step latched until the physical clock reaches the target.
+    m_governorEmergency = sample.frequencyMhz > (double) m_runtimeFrequencyTarget + 0.01;
+
+    if (preserved) {
+        ESP_LOGI(TAG,
+                 "hashrate governor cap updated without base reset: old-target=%uMHz stable=%uMHz max=%uMHz",
+                 previousRuntimeTarget, m_hashrateGovernor.stableRuntimeMhz(), maxFrequency);
+    } else {
+        ESP_LOGI(TAG, "hashrate governor %s: base=%uMHz max=%uMHz power=%.1fW",
+                 enabled ? "enabled" : "disabled", baseFrequency, maxFrequency,
+                 (double) powerLimit10 / 10.0);
+    }
 }
 
 void PowerManagementTask::updateHashrateGovernor(uint64_t nowMs)
 {
-    syncHashrateGovernorConfiguration(nowMs);
-    if (!m_governorConfigured) return;
-
     HashrateGovernor::Sample sample;
     sample.nowMs = nowMs;
     sample.frequencyMhz = m_board->getEffectiveAsicFrequency();
@@ -338,6 +388,9 @@ void PowerManagementTask::updateHashrateGovernor(uint64_t nowMs)
         : UINT64_MAX;
     sample.rejectedShares = STRATUM_MANAGER ? STRATUM_MANAGER->getSharesRejectedSnapshot() : 0;
     sample.duplicateShares = getDuplicateHWNonces();
+
+    syncHashrateGovernorConfiguration(nowMs, sample);
+    if (!m_governorConfigured) return;
 
     const HashrateGovernor::State oldState = m_governorState;
     const HashrateGovernor::Reason oldReason = m_governorReason;

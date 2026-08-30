@@ -14,6 +14,43 @@ bool finitePositive(double value)
     return std::isfinite(value) && value > 0.0;
 }
 
+std::vector<uint16_t> normalizedFrequencies(const std::vector<uint16_t> &frequencyOptions)
+{
+    std::vector<uint16_t> normalized;
+    normalized.reserve(frequencyOptions.size());
+    for (uint16_t frequency : frequencyOptions) {
+        if (frequency != 0 && frequency != ALWAYS_EXCLUDED_FREQUENCY_MHZ) {
+            normalized.push_back(frequency);
+        }
+    }
+    std::sort(normalized.begin(), normalized.end());
+    normalized.erase(std::unique(normalized.begin(), normalized.end()), normalized.end());
+    return normalized;
+}
+
+std::vector<uint16_t> cappedFrequencies(const std::vector<uint16_t> &supported,
+                                        uint16_t logicalCapMhz)
+{
+    std::vector<uint16_t> allowed;
+    allowed.reserve(supported.size());
+    for (uint16_t frequency : supported) {
+        if (frequency <= logicalCapMhz) {
+            allowed.push_back(frequency);
+        }
+    }
+    return allowed;
+}
+
+bool sameLimits(const Limits &left, const Limits &right)
+{
+    return left.powerLimitWatts == right.powerLimitWatts &&
+           left.currentLimitAmps == right.currentLimitAmps &&
+           left.chipTemperatureLimitC == right.chipTemperatureLimitC &&
+           left.vrTemperatureLimitC == right.vrTemperatureLimitC &&
+           left.expectedChips == right.expectedChips &&
+           left.maxTelemetryAgeMs == right.maxTelemetryAgeMs;
+}
+
 } // namespace
 
 bool Governor::configure(const std::vector<uint16_t> &frequencyOptions,
@@ -25,24 +62,15 @@ bool Governor::configure(const std::vector<uint16_t> &frequencyOptions,
         return false;
     }
 
-    std::vector<uint16_t> allowed;
-    allowed.reserve(frequencyOptions.size());
-    for (uint16_t frequency : frequencyOptions) {
-        if (frequency == 0 || frequency > logicalCapMhz ||
-            frequency == ALWAYS_EXCLUDED_FREQUENCY_MHZ) {
-            continue;
-        }
-        allowed.push_back(frequency);
-    }
-
-    std::sort(allowed.begin(), allowed.end());
-    allowed.erase(std::unique(allowed.begin(), allowed.end()), allowed.end());
+    std::vector<uint16_t> supported = normalizedFrequencies(frequencyOptions);
+    std::vector<uint16_t> allowed = cappedFrequencies(supported, logicalCapMhz);
     if (allowed.empty() ||
         !std::binary_search(allowed.begin(), allowed.end(), persistentBaseMhz)) {
         return false;
     }
 
     m_frequencyOptions = allowed;
+    m_supportedFrequencyOptions = supported;
     m_limits = limits;
     m_logicalCapMhz = logicalCapMhz;
     m_persistentBaseMhz = persistentBaseMhz;
@@ -56,6 +84,98 @@ bool Governor::configure(const std::vector<uint16_t> &frequencyOptions,
     m_lowRatioSamples = 0;
     resetPhase();
     clearProbe();
+    return true;
+}
+
+bool Governor::configurationMatches(const std::vector<uint16_t> &frequencyOptions,
+                                    uint16_t persistentBaseMhz,
+                                    const Limits &limits,
+                                    uint16_t logicalCapMhz) const
+{
+    if (!m_configured || logicalCapMhz == 0 || persistentBaseMhz != m_persistentBaseMhz ||
+        logicalCapMhz != m_logicalCapMhz || !sameLimits(limits, m_limits)) {
+        return false;
+    }
+
+    const std::vector<uint16_t> supported = normalizedFrequencies(frequencyOptions);
+    return supported == m_supportedFrequencyOptions &&
+           cappedFrequencies(supported, logicalCapMhz) == m_frequencyOptions;
+}
+
+bool Governor::reconfigureCapPreservingStable(
+    const std::vector<uint16_t> &frequencyOptions,
+    uint16_t persistentBaseMhz,
+    const Limits &limits,
+    uint16_t logicalCapMhz,
+    const Sample &sample)
+{
+    if (!m_configured || !m_enabled || logicalCapMhz == 0 ||
+        logicalCapMhz == m_logicalCapMhz || persistentBaseMhz != m_persistentBaseMhz ||
+        !validLimits(limits) || !sameLimits(limits, m_limits) ||
+        (m_state != State::OBSERVE && m_state != State::PROBE)) {
+        return false;
+    }
+
+    const std::vector<uint16_t> supported = normalizedFrequencies(frequencyOptions);
+    if (supported != m_supportedFrequencyOptions) {
+        return false;
+    }
+    std::vector<uint16_t> allowed = cappedFrequencies(supported, logicalCapMhz);
+    if (allowed.empty() ||
+        !std::binary_search(allowed.begin(), allowed.end(), persistentBaseMhz)) {
+        return false;
+    }
+
+    // A cap edit must never mask an unsafe or out-of-order sample. The normal
+    // full reconfiguration path will then restart at the persistent base.
+    if ((m_haveLastUpdate && sample.nowMs < m_lastUpdateMs) || !validSample(sample) ||
+        !telemetryFresh(sample) || guardFailure(sample).failed ||
+        hashrateRatio(sample) < ROLLBACK_RATIO) {
+        return false;
+    }
+
+    // OBSERVE represents a settled point and must agree with the physical PLL.
+    // A PROBE may legitimately be in flight; it is aborted below to the last
+    // stable point. Do not let a cap edit hide a reject/duplicate from that probe.
+    if (m_state == State::OBSERVE &&
+        (m_runtimeTargetMhz != m_stableRuntimeMhz ||
+         !sameFrequency(sample.frequencyMhz, m_stableRuntimeMhz))) {
+        return false;
+    }
+    if (m_state == State::PROBE &&
+        (sample.rejectedShares > m_probeRejectedBaseline ||
+         sample.duplicateShares > m_probeDuplicateBaseline)) {
+        return false;
+    }
+
+    auto stableOrLower = std::upper_bound(
+        allowed.begin(), allowed.end(), m_stableRuntimeMhz);
+    if (stableOrLower == allowed.begin()) {
+        return false;
+    }
+    --stableOrLower;
+    const uint16_t preservedTarget = *stableOrLower;
+    if (preservedTarget < persistentBaseMhz) {
+        return false;
+    }
+
+    m_frequencyOptions = allowed;
+    m_logicalCapMhz = logicalCapMhz;
+    m_runtimeTargetMhz = preservedTarget;
+    m_stableRuntimeMhz = preservedTarget;
+    m_lowRatioSamples = 0;
+    clearProbe();
+
+    // A cap increase at an already-settled point needs only a fresh observation
+    // window. A clamped/in-flight point first has to reach its target, so retain
+    // the normal warmup before it can probe again.
+    if (sameFrequency(sample.frequencyMhz, preservedTarget)) {
+        m_state = State::OBSERVE;
+        startPhase(sample.nowMs);
+    } else {
+        m_state = State::WARMUP;
+        resetPhase();
+    }
     return true;
 }
 

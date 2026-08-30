@@ -107,6 +107,28 @@ class Governor {
                    const Limits &limits,
                    uint16_t logicalCapMhz = DEFAULT_LOGICAL_CAP_MHZ);
 
+    /** Returns true when every effective configuration field is unchanged. */
+    bool configurationMatches(const std::vector<uint16_t> &frequencyOptions,
+                              uint16_t persistentBaseMhz,
+                              const Limits &limits,
+                              uint16_t logicalCapMhz) const;
+
+    /**
+     * Applies a cap-only reconfiguration without discarding a proven runtime
+     * point. This deliberately fails closed unless the governor is enabled,
+     * the base/options/limits are unchanged, and the supplied sample is fresh,
+     * valid and safe. A reduced cap clamps the target to the highest allowed
+     * option no greater than the last stable point.
+     *
+     * Returning false means that the caller must use configure()+setEnabled(),
+     * which restarts from the persistent base.
+     */
+    bool reconfigureCapPreservingStable(const std::vector<uint16_t> &frequencyOptions,
+                                        uint16_t persistentBaseMhz,
+                                        const Limits &limits,
+                                        uint16_t logicalCapMhz,
+                                        const Sample &sample);
+
     /** Opt-in switch. Enabling always starts a fresh warmup at the base. */
     bool setEnabled(bool enabled, uint64_t nowMs);
 
@@ -136,17 +158,18 @@ class Governor {
         Reason reason = Reason::OBSERVING;
     };
 
-    // Require an almost-perfect base point before spending power on a probe.
-    // The verified 550MHz point on real NerdQAxe+ hardware reaches about 98%
-    // of the BM1368 theoretical counter rate while still improving absolute
-    // throughput, so probe acceptance uses a separate empirical floor.
-    static constexpr double MIN_BASE_ASCENT_RATIO = 0.995;
+    // The hardware counter on a healthy, long-running NerdQAxe+ is observed at
+    // roughly 99.3% of the BM1368 theoretical rate. Keep enough margin for that
+    // normal systematic gap while still vetoing a materially degraded base.
+    // Probe acceptance remains a separate, lower empirical floor.
+    static constexpr double MIN_BASE_ASCENT_RATIO = 0.990;
     static constexpr double MIN_PROBE_ACCEPT_RATIO = 0.975;
     static constexpr double ROLLBACK_RATIO = 0.965;
     static constexpr uint8_t LOW_RATIO_SAMPLE_LIMIT = 3;
     static constexpr double FREQUENCY_EPSILON_MHZ = 0.01;
 
     std::vector<uint16_t> m_frequencyOptions;
+    std::vector<uint16_t> m_supportedFrequencyOptions;
     Limits m_limits;
     bool m_configured = false;
     bool m_enabled = false;

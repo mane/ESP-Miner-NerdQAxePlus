@@ -222,7 +222,7 @@ Full device configuration. Used by the Settings page.
   "defaultVrFrequency": 500,
   "ecoFrequency": 400,
   "ecoCoreVoltage": 1100,
-  "frequencyOptions": [400, 425, 450, 475, 490, 500, 525, 540, 550],
+  "frequencyOptions": [400, 425, 450, 475, 490, 500, 525, 531, 534, 537, 540, 550],
   "voltageOptions": [1100, 1150, 1200, 1250, 1300, 1350],
   "absMinCoreVoltage": 1050,
   "absMaxCoreVoltage": 1400,
@@ -351,6 +351,13 @@ lowering the voltage of an already governed miner. The 69 W comparison is
 strict, while the board's independent 70 W and 5.9 A guards remain active.
 The adaptive governor is opt-in; when disabled, the persistent `frequency`
 continues to be applied exactly as before.
+
+On NerdQAxe+, the nominal 531, 534, and 537 MHz options are qualified BM1368
+low-VCO presets. They use register-0x08 feedback dividers `AA`, `AB`, and `AC`
+and produce 531.250, 534.375, and 537.500 MHz physically; the existing 540 MHz
+preset remains `AD` (540.625 MHz physical). Settings keep reporting the nominal
+integer target in `effectiveFrequency`; the dashboard exposes the physical clock
+separately in `actualFrequency`.
 
 **Response**: `200 OK` (empty body). Device subsystems are automatically reloaded after saving.
 

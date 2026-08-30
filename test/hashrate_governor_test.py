@@ -70,6 +70,27 @@ static Decision reachProbe(Governor &governor)
     return decision;
 }
 
+static Governor stableAt540(uint64_t &now, uint16_t logicalCapMhz)
+{
+    Governor governor;
+    assert(governor.configure({490, 525, 540, 550}, 525, limits(), logicalCapMhz));
+    assert(governor.setEnabled(true, 0));
+    governor.update(healthy(0));
+    governor.update(healthy(WARMUP_MS));
+    Decision requested = governor.update(healthy(WARMUP_MS + OBSERVE_MS));
+    assert(requested.reason == Reason::PROBE_REQUESTED);
+    assert(requested.targetFrequencyMhz == 540);
+
+    Sample at540 = healthy(WARMUP_MS + OBSERVE_MS + 1, 540.0);
+    governor.update(at540);
+    at540.nowMs += OBSERVE_MS;
+    Decision accepted = governor.update(at540);
+    assert(accepted.reason == Reason::PROBE_ACCEPTED);
+    assert(governor.stableRuntimeMhz() == 540);
+    now = at540.nowMs;
+    return governor;
+}
+
 static void testConfigurationAndMath()
 {
     Governor governor = configuredGovernor();
@@ -197,7 +218,7 @@ static void testQualified540StepAndProbeRollback()
     assert(rollback.targetFrequencyMhz == 540);
 }
 
-static void testFreshTelemetryAndRatioGateAscent()
+static void testFreshTelemetryAndMeasuredBaseRatioGateAscent()
 {
     Governor staleGovernor = configuredGovernor();
     assert(staleGovernor.setEnabled(true, 0));
@@ -207,10 +228,24 @@ static void testFreshTelemetryAndRatioGateAscent()
     assert(staleDecision.reason == Reason::TELEMETRY_STALE);
     assert(staleGovernor.state() == State::WARMUP);
 
+    // 99.3% is the measured healthy long-running baseline on the target board.
+    Governor measuredGovernor = configuredGovernor();
+    assert(measuredGovernor.setEnabled(true, 0));
+    Sample measured = healthy(0);
+    measured.hashrateGhs *= 0.993;
+    measuredGovernor.update(measured);
+    measured.nowMs = WARMUP_MS;
+    measuredGovernor.update(measured);
+    measured.nowMs += OBSERVE_MS;
+    Decision measuredDecision = measuredGovernor.update(measured);
+    assert(measuredDecision.reason == Reason::PROBE_REQUESTED);
+    assert(measuredDecision.targetFrequencyMhz == 550);
+
+    // A materially degraded 98.5% base remains blocked from spending more power.
     Governor slowGovernor = configuredGovernor();
     assert(slowGovernor.setEnabled(true, 0));
     Sample slow = healthy(0);
-    slow.hashrateGhs *= 0.990;
+    slow.hashrateGhs *= 0.985;
     slowGovernor.update(slow);
     slow.nowMs = WARMUP_MS;
     slowGovernor.update(slow);
@@ -219,6 +254,121 @@ static void testFreshTelemetryAndRatioGateAscent()
     assert(slowDecision.reason == Reason::OBSERVING);
     assert(!slowDecision.changeRequested);
     assert(slowGovernor.state() == State::OBSERVE);
+}
+
+static void testCapIncreasePreservesStablePointAndRestartsObservation()
+{
+    uint64_t now = 0;
+    Governor governor = stableAt540(now, 540);
+    Sample sample = healthy(now + 1, 540.0);
+
+    assert(!governor.configurationMatches({490, 525, 540, 550}, 525, limits(), 550));
+    assert(governor.reconfigureCapPreservingStable(
+        {490, 525, 540, 550}, 525, limits(), 550, sample));
+    assert(governor.logicalCapMhz() == 550);
+    assert(governor.runtimeTargetMhz() == 540);
+    assert(governor.stableRuntimeMhz() == 540);
+    assert(governor.state() == State::OBSERVE);
+    assert(governor.configurationMatches({550, 540, 525, 490}, 525, limits(), 550));
+
+    Decision freshWindow = governor.update(sample);
+    assert(freshWindow.reason == Reason::OBSERVING);
+    assert(!freshWindow.changeRequested);
+    sample.nowMs += OBSERVE_MS;
+    Decision nextProbe = governor.update(sample);
+    assert(nextProbe.reason == Reason::PROBE_REQUESTED);
+    assert(nextProbe.targetFrequencyMhz == 550);
+}
+
+static void testReducedCapClampsStablePointAndRequestsImmediateDownclock()
+{
+    uint64_t now = 0;
+    Governor governor = stableAt540(now, 550);
+
+    Sample at540 = healthy(now + OBSERVE_MS, 540.0);
+    Decision requested550 = governor.update(at540);
+    assert(requested550.reason == Reason::PROBE_REQUESTED);
+    assert(requested550.targetFrequencyMhz == 550);
+    Sample at550 = healthy(at540.nowMs + 1, 550.0);
+    governor.update(at550);
+    at550.nowMs += OBSERVE_MS;
+    Decision accepted550 = governor.update(at550);
+    assert(accepted550.reason == Reason::PROBE_ACCEPTED);
+    assert(governor.stableRuntimeMhz() == 550);
+
+    Sample capEdit = healthy(at550.nowMs + 1, 550.0);
+    assert(governor.reconfigureCapPreservingStable(
+        {490, 525, 540, 550}, 525, limits(), 540, capEdit));
+    assert(governor.logicalCapMhz() == 540);
+    assert(governor.runtimeTargetMhz() == 540);
+    assert(governor.stableRuntimeMhz() == 540);
+    assert(governor.state() == State::WARMUP);
+    assert(governor.isFrequencyAllowed(540));
+    assert(!governor.isFrequencyAllowed(550));
+
+    Decision downclock = governor.update(capEdit);
+    assert(downclock.reason == Reason::WARMING_UP);
+    assert(downclock.changeRequested);
+    assert(downclock.targetFrequencyMhz == 540);
+}
+
+static void testInFlightProbeIsAbortedToLastStablePoint()
+{
+    uint64_t now = 0;
+    Governor governor = stableAt540(now, 550);
+    Sample at540 = healthy(now + OBSERVE_MS, 540.0);
+    Decision probe = governor.update(at540);
+    assert(probe.targetFrequencyMhz == 550);
+    assert(governor.state() == State::PROBE);
+
+    Sample inFlight = healthy(at540.nowMs + 1, 550.0);
+    assert(governor.reconfigureCapPreservingStable(
+        {490, 525, 540, 550}, 525, limits(), 540, inFlight));
+    assert(governor.runtimeTargetMhz() == 540);
+    assert(governor.stableRuntimeMhz() == 540);
+    assert(governor.state() == State::WARMUP);
+}
+
+static void testCapPreservationFailsClosed()
+{
+    uint64_t now = 0;
+    Governor governor = stableAt540(now, 540);
+    const std::vector<uint16_t> frequencies = {490, 525, 540, 550};
+    Sample sample = healthy(now + 1, 540.0);
+
+    Limits changedLimits = limits();
+    changedLimits.powerLimitWatts -= 1.0;
+    assert(!governor.reconfigureCapPreservingStable(
+        frequencies, 525, changedLimits, 550, sample));
+    assert(!governor.reconfigureCapPreservingStable(
+        frequencies, 490, limits(), 550, sample));
+
+    Sample stale = sample;
+    stale.telemetryAgeMs = limits().maxTelemetryAgeMs + 1;
+    assert(!governor.reconfigureCapPreservingStable(
+        frequencies, 525, limits(), 550, stale));
+    Sample unsafe = sample;
+    unsafe.powerWatts = limits().powerLimitWatts;
+    assert(!governor.reconfigureCapPreservingStable(
+        frequencies, 525, limits(), 550, unsafe));
+    Sample degraded = sample;
+    degraded.hashrateGhs *= 0.950;
+    assert(!governor.reconfigureCapPreservingStable(
+        frequencies, 525, limits(), 550, degraded));
+
+    // Every failed attempt is non-mutating; a subsequent valid cap-only edit works.
+    assert(governor.logicalCapMhz() == 540);
+    assert(governor.runtimeTargetMhz() == 540);
+    assert(governor.reconfigureCapPreservingStable(
+        frequencies, 525, limits(), 550, sample));
+
+    assert(governor.setEnabled(false, sample.nowMs));
+    assert(!governor.reconfigureCapPreservingStable(
+        frequencies, 525, limits(), 540, sample));
+
+    Governor rebooted;
+    assert(!rebooted.reconfigureCapPreservingStable(
+        frequencies, 525, limits(), 550, sample));
 }
 
 static void testLowRatioAtPersistentBaseNeverDownclocks()
@@ -367,7 +517,11 @@ int main()
     testPredictedPowerBlocksProbe();
     testVerified525To550ProbeFits69WEnvelope();
     testQualified540StepAndProbeRollback();
-    testFreshTelemetryAndRatioGateAscent();
+    testFreshTelemetryAndMeasuredBaseRatioGateAscent();
+    testCapIncreasePreservesStablePointAndRestartsObservation();
+    testReducedCapClampsStablePointAndRequestsImmediateDownclock();
+    testInFlightProbeIsAbortedToLastStablePoint();
+    testCapPreservationFailsClosed();
     testLowRatioAtPersistentBaseNeverDownclocks();
     testProbeRejectAndDuplicateRollback();
     testThreeLowRatioSamplesRollback();
@@ -430,6 +584,29 @@ class HashrateGovernorTest(unittest.TestCase):
         self.assertIn("DEFAULT_LOGICAL_CAP_MHZ = 550", header)
         self.assertIn("ALWAYS_EXCLUDED_FREQUENCY_MHZ = 575", header)
         self.assertIn("chips) * BM1368_SMALL_CORES * frequencyMhz / 1000.0", source)
+
+    def test_power_task_reconfiguration_has_allocation_free_safety_fast_path(self) -> None:
+        source = (REPO / "main/tasks/power_management_task.cpp").read_text()
+        fast_path = source.index("sameGovernorLimits(limits, m_governorLimits)")
+        frequency_copy = source.index("std::vector<uint16_t> governorFrequencies")
+
+        self.assertLess(fast_path, frequency_copy)
+        for field in (
+            "baseFrequency == m_governorBaseFrequency",
+            "baseVoltageMillis == m_governorBaseVoltageMillis",
+            "maxFrequency == m_governorMaxFrequency",
+            "powerLimit10 == m_governorPowerLimit10",
+            "enabled == m_governorEnabled",
+        ):
+            field_position = source.index(field)
+            self.assertLess(field_position, frequency_copy)
+
+        self.assertIn("m_governorLimits = limits", source)
+        self.assertIn("reconfigureCapPreservingStable", source)
+        self.assertIn(
+            "m_governorEmergency = sample.frequencyMhz > (double) m_runtimeFrequencyTarget + 0.01",
+            source,
+        )
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@
 #include "mining_utils.h"
 #include "serial.h"
 #include "asic.h"
+#include "bm1368_pll.h"
 #include "crc.h"
 
 
@@ -109,24 +110,25 @@ bool Asic::sendHashFrequency(float target_freq) {
         return false;
     }
 
-    // Qualified BM1368 low-VCO point. Keep the cached control frequency at
-    // the nominal target so PLL ramping and governor comparisons converge on
-    // 540MHz, while reporting the physical PLL output separately.
-    constexpr float BM1368_540_NOMINAL_MHZ = 540.0f;
-    constexpr float BM1368_540_ACTUAL_MHZ = 540.625f;
-    constexpr float PLL_TARGET_EPSILON_MHZ = 0.001f;
+    // Keep the cached control frequency at the nominal target so PLL ramping
+    // and governor comparisons converge on an integer board option, while
+    // reporting the physical low-VCO output separately.
+    BM1368Pll::LowVcoPreset lowVcoPreset{};
     if (strcmp(getName(), "BM1368") == 0 &&
-        fabsf(target_freq - BM1368_540_NOMINAL_MHZ) <= PLL_TARGET_EPSILON_MHZ) {
-        uint8_t freqbuf[6] = {0x00, 0x08, 0x40, 0xAD, 0x02, 0x30};
+        BM1368Pll::findLowVcoPreset(target_freq, &lowVcoPreset)) {
+        uint8_t freqbuf[6];
+        BM1368Pll::encodeLowVcoPayload(lowVcoPreset, freqbuf);
         if (!send(CMD_WRITE_ALL, freqbuf, sizeof(freqbuf))) {
-            ESP_LOGE(TAG, "Failed to send BM1368 low-VCO PLL settings for 540MHz");
+            ESP_LOGE(TAG, "Failed to send BM1368 low-VCO PLL settings for %uMHz",
+                     (unsigned)lowVcoPreset.nominalMhz);
             return false;
         }
 
-        ESP_LOGI(TAG, "Setting BM1368 Frequency to 540.00MHz "
-                      "(540.625MHz actual, low-VCO)");
-        m_current_frequency = BM1368_540_NOMINAL_MHZ;
-        m_actual_current_frequency = BM1368_540_ACTUAL_MHZ;
+        ESP_LOGI(TAG, "Setting BM1368 Frequency to %uMHz "
+                      "(%.3fMHz actual, low-VCO)",
+                 (unsigned)lowVcoPreset.nominalMhz, lowVcoPreset.actualMhz);
+        m_current_frequency = static_cast<float>(lowVcoPreset.nominalMhz);
+        m_actual_current_frequency = lowVcoPreset.actualMhz;
         return true;
     }
 
@@ -324,6 +326,14 @@ bool Asic::stepAsicFrequency(float target_frequency, float max_step_mhz)
     const float delta = target_frequency - m_current_frequency;
     if (fabsf(delta) <= 0.001f) {
         return true;
+    }
+
+    // A nearby final target is already within the permitted slew. Send it
+    // directly even when the nominal frequency is off the 6.25 MHz grid.
+    // This avoids rewriting the same BM1368 low-VCO preset on transitions
+    // such as 531 -> 534 MHz and 537 -> 540 MHz.
+    if (fabsf(delta) <= max_step_mhz) {
+        return sendHashFrequency(target_frequency);
     }
 
     float next_frequency = target_frequency;

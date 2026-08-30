@@ -25,34 +25,50 @@ def _function_body(source: str, signature: str) -> str:
 
 
 class MiningPerformanceContractTest(unittest.TestCase):
-    def test_bm1368_540_uses_isolated_low_vco_pll_preset(self) -> None:
+    def test_bm1368_qualified_low_vco_pll_presets(self) -> None:
         body = _function_body(_read("components/bm1397/asic.cpp"),
                               "bool Asic::sendHashFrequency")
+        presets = _read("components/bm1397/include/bm1368_pll.h")
+        board = _function_body(_read("main/boards/nerdqaxeplus.cpp"),
+                               "NerdQaxePlus::NerdQaxePlus()")
 
         preset_start = body.index('if (strcmp(getName(), "BM1368") == 0')
         solver_start = body.index("float min_diff = 2.0;")
-        preset = body[preset_start:solver_start]
+        preset_path = body[preset_start:solver_start]
 
         self.assertLess(preset_start, solver_start)
-        self.assertIn("BM1368_540_NOMINAL_MHZ = 540.0f", body)
-        self.assertIn("BM1368_540_ACTUAL_MHZ = 540.625f", body)
-        self.assertIn("PLL_TARGET_EPSILON_MHZ = 0.001f", body)
-        self.assertIn(
-            "fabsf(target_freq - BM1368_540_NOMINAL_MHZ) <= PLL_TARGET_EPSILON_MHZ",
-            preset,
-        )
-        self.assertIn("{0x00, 0x08, 0x40, 0xAD, 0x02, 0x30}", preset)
-        self.assertEqual(body.count("{0x00, 0x08, 0x40, 0xAD, 0x02, 0x30}"), 1)
+        self.assertIn("BM1368Pll::findLowVcoPreset", preset_path)
+        self.assertIn("BM1368Pll::encodeLowVcoPayload", preset_path)
+        self.assertIn("m_current_frequency = static_cast<float>(lowVcoPreset.nominalMhz);", preset_path)
+        self.assertIn("m_actual_current_frequency = lowVcoPreset.actualMhz;", preset_path)
 
-        send_guard = preset.index("if (!send(CMD_WRITE_ALL, freqbuf, sizeof(freqbuf)))")
-        failure_return = preset.index("return false;", send_guard)
-        nominal_cache = preset.index("m_current_frequency = BM1368_540_NOMINAL_MHZ;")
-        actual_cache = preset.index("m_actual_current_frequency = BM1368_540_ACTUAL_MHZ;")
-        success_return = preset.index("return true;", actual_cache)
+        send_guard = preset_path.index("if (!send(CMD_WRITE_ALL, freqbuf, sizeof(freqbuf)))")
+        failure_return = preset_path.index("return false;", send_guard)
+        nominal_cache = preset_path.index("m_current_frequency =", failure_return)
+        actual_cache = preset_path.index("m_actual_current_frequency =", nominal_cache)
+        success_return = preset_path.index("return true;", actual_cache)
         self.assertLess(send_guard, failure_return)
         self.assertLess(failure_return, nominal_cache)
         self.assertLess(nominal_cache, actual_cache)
         self.assertLess(actual_cache, success_return)
+
+        for nominal, actual, divider in (
+            (531, "531.250f", "0xAA"),
+            (534, "534.375f", "0xAB"),
+            (537, "537.500f", "0xAC"),
+            (540, "540.625f", "0xAD"),
+        ):
+            self.assertIn(f"{{{nominal}, {actual}, {divider}}}", presets)
+
+        for byte in ("payload[0] = 0x00", "payload[1] = 0x08",
+                     "payload[2] = 0x40", "payload[4] = 0x02",
+                     "payload[5] = 0x30"):
+            self.assertIn(byte, presets)
+        self.assertIn("payload[3] = preset.feedbackDivider", presets)
+        self.assertIn(
+            "m_asicFrequencies = {400, 425, 450, 475, 490, 500, 525, 531, 534, 537, 540, 550};",
+            board,
+        )
 
     def test_asic_send_reports_uart_write_failures(self) -> None:
         header = _read("components/bm1397/include/asic.h")
@@ -283,6 +299,17 @@ class MiningPerformanceContractTest(unittest.TestCase):
         self.assertLess(send_guard, failure_return)
         self.assertLess(failure_return, cached_update)
         self.assertLess(cached_update, actual_update)
+
+    def test_nearby_frequency_target_skips_redundant_grid_rewrite(self) -> None:
+        body = _function_body(_read("components/bm1397/asic.cpp"),
+                              "bool Asic::stepAsicFrequency")
+
+        direct_guard = body.index("if (fabsf(delta) <= max_step_mhz)")
+        direct_send = body.index("return sendHashFrequency(target_frequency);", direct_guard)
+        grid_alignment = body.index("const float remainder = fmodf", direct_send)
+
+        self.assertLess(direct_guard, direct_send)
+        self.assertLess(direct_send, grid_alignment)
 
     def test_bm1368_init_propagates_frequency_transition_failure(self) -> None:
         body = _function_body(_read("components/bm1397/bm1368.cpp"),

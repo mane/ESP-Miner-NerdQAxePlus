@@ -48,9 +48,11 @@ NerdQaxePlus::NerdQaxePlus() : Board() {
     m_asicCount = 4;
     m_asicJobIntervalMs = 1200;
     // 575MHz exceeds the qualified 70W / 6A board envelope on real hardware.
-    // 540MHz is an exact BM1368 PLL point and gives the governor a sustained
-    // step above 525MHz when a board cannot thermally hold the 550MHz ceiling.
-    m_asicFrequencies = {400, 425, 450, 475, 490, 500, 525, 540, 550};
+    // The qualified 540MHz nominal low-VCO point (540.625MHz physical) gives
+    // the governor a sustained step above 525MHz below the 550MHz ceiling.
+    // 531/534/537MHz are intermediate BM1368 low-VCO points. Register 0x08 uses
+    // feedback dividers AA/AB/AC, yielding 531.25/534.375/537.5MHz physically.
+    m_asicFrequencies = {400, 425, 450, 475, 490, 500, 525, 531, 534, 537, 540, 550};
     m_asicVoltages = {1100, 1150, 1200, 1250, 1300, 1350};
     m_defaultAsicFrequency = m_asicFrequency = 490;
     m_defaultAsicVoltageMillis = m_asicVoltageMillis = 1250; // default voltage
